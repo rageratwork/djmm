@@ -1,6 +1,6 @@
 /*
  * DjMM
- * v0.1
+ * v0.2
  *
  * Copyright (c) 2011, David J. Rager
  * djrager@fourthwoods.com

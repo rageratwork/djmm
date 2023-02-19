@@ -1,6 +1,6 @@
 /*
  * DjMM
- * v0.1
+ * v0.2
  *
  * Copyright (c) 2011, David J. Rager
  * djrager@fourthwoods.com
@@ -68,7 +68,7 @@ static const unsigned int MUS_ID = '\x1ASUM';
 
 #ifndef MUS_PLAYER_STANDALONE
 
-#include "dj_debug.h"
+//#include "dj_debug.h"
 #include "djmm_utils.h"
 
 #else
@@ -77,8 +77,7 @@ static unsigned long read_var_long(unsigned char* buf, unsigned int* inc);
 
 #endif
 
-struct mus_player
-{
+struct mus_player {
 	HANDLE event;
 	HANDLE thread;
 	HANDLE ready;
@@ -96,12 +95,11 @@ struct mus_player
 
 	struct mus_score* score;
 	mus_notify_cb cb;
-	
+
 	struct mus_player* next;
 };
 
-struct mus_score
-{
+struct mus_score {
 	unsigned char volume;
 	unsigned int ticks;
 
@@ -113,8 +111,7 @@ struct mus_score
 
 #define MAX_BUFFER_SIZE (1024 * 12)
 
-struct mus_player_event
-{
+struct mus_player_event {
 	union {
 		unsigned char byte;
 		struct {
@@ -131,14 +128,12 @@ static void mus_player_shutdown(struct mus_player* p);
 static void mus_close_stream(struct mus_player* p);
 static void mus_rewind(struct mus_score* m);
 
-static void CALLBACK mus_callback_proc(HMIDIOUT hmo, UINT wMsg, DWORD_PTR dwInstance, DWORD_PTR dwParam1, DWORD_PTR dwParam2)
-{
+static void CALLBACK mus_callback_proc(HMIDIOUT hmo, UINT wMsg, DWORD_PTR dwInstance, DWORD_PTR dwParam1, DWORD_PTR dwParam2) {
 	struct mus_player* p = (struct mus_player*)dwInstance;
-	if(p == NULL)
+	if (p == NULL)
 		return;
 
-	switch (wMsg)
-	{
+	switch (wMsg) {
 	case MOM_POSITIONCB:
 		break;
 	case MOM_DONE:
@@ -154,85 +149,73 @@ static void CALLBACK mus_callback_proc(HMIDIOUT hmo, UINT wMsg, DWORD_PTR dwInst
 
 }
 
-static DWORD WINAPI mus_player_proc(LPVOID lpParameter)
-{
+static DWORD WINAPI mus_player_proc(LPVOID lpParameter) {
 	struct mus_player* p = (struct mus_player*)lpParameter;
 	unsigned int err = MMSYSERR_NOERROR;
 
 	unsigned int idx = 0;
 
-	WaitForSingleObject(p->mutex, INFINITE);
-	while((p->state != STATE_SHUTDOWN) && (p->state != STATE_ERROR))
-	{
-		switch(p->state)
-		{
-		case STATE_PLAYING:
-			ReleaseMutex(p->mutex);
-			WaitForSingleObject(p->event, INFINITE);
+	while ((p->state != STATE_SHUTDOWN) && (p->state != STATE_ERROR)) {
+		WaitForSingleObject(p->event, INFINITE);
 
+		switch (p->state) {
+		case STATE_STARTING:
+			WaitForSingleObject(p->mutex, INFINITE);
+			p->state = STATE_PLAYING;
+			ReleaseMutex(p->mutex);
+
+			break;
+		case STATE_PLAYING:
 			WaitForSingleObject(p->mutex, INFINITE);
 
-			if(p->state == STATE_SHUTDOWN)
-				break;
+			mus_get_streambuf(p->score, (unsigned int*)p->header[idx].lpData, (unsigned int*)&p->header[idx].dwBufferLength);
+			p->header[idx].dwBytesRecorded = p->header[idx].dwBufferLength;
 
-			if((p->state == STATE_PLAYING) || (p->state == STATE_PAUSED))
-			{
-				mus_get_streambuf(p->score, (unsigned int*)p->header[idx].lpData, (unsigned int*)&p->header[idx].dwBufferLength);
-				p->header[idx].dwBytesRecorded = p->header[idx].dwBufferLength;
-				if(p->header[idx].dwBufferLength > 0)
-				{
-					p->header[idx].dwFlags &= ~WHDR_DONE;
+			if (p->header[idx].dwBufferLength > 0) {
+				p->header[idx].dwFlags &= ~WHDR_DONE; // clear the done flag to reuse the buffer
+				midiStreamOut(p->stream, &p->header[idx], sizeof(MIDIHDR));
+				idx = (idx + 1) % 2;
+			} else {
+				if (p->looping) {
+					mus_rewind(p->score);
+					mus_get_streambuf(p->score, (unsigned int*)p->header[idx].lpData, (unsigned int*)&p->header[idx].dwBufferLength);
+					p->header[idx].dwBytesRecorded = p->header[idx].dwBufferLength;
+					p->header[idx].dwFlags &= ~MHDR_DONE;
 					midiStreamOut(p->stream, &p->header[idx], sizeof(MIDIHDR));
 					idx = (idx + 1) % 2;
-				}
-				else
-				{
-					if(p->looping)
-					{
-						mus_rewind(p->score);
-						mus_get_streambuf(p->score, (unsigned int*)p->header[idx].lpData, (unsigned int*)&p->header[idx].dwBufferLength);
-						p->header[idx].dwBytesRecorded = p->header[idx].dwBufferLength;
-						p->header[idx].dwFlags &= ~MHDR_DONE;
-						midiStreamOut(p->stream, &p->header[idx], sizeof(MIDIHDR));
-						idx = (idx + 1) % 2;
-					}
-					else
-					{
-						// one more buffer left playing, wait for it to finish
-						ReleaseMutex(p->mutex);
-						WaitForSingleObject(p->event, INFINITE);
-
-						WaitForSingleObject(p->mutex, INFINITE);
-						if(p->state == STATE_SHUTDOWN)
-							break;
-
-						mus_close_stream(p);
-
-						// don't bother releasing the mutex and looping again,
-						// just enter the stopped state.
-						goto stopped;
-					}
+				} else {
+					// one more buffer left playing, wait for it to finish
+					p->state = STATE_STOPPING;
 				}
 			}
+
 			ReleaseMutex(p->mutex);
+			break;
+		case STATE_STOPPING:
+			WaitForSingleObject(p->mutex, INFINITE);
+
+			mus_close_stream(p);
+			mus_rewind(p->score);
+
+			SetEvent(p->event);
+			ReleaseMutex(p->mutex);
+
 			break;
 		case STATE_STOPPED:
-stopped:
 			idx = 0;
-			if(p->cb)
+			WaitForSingleObject(p->mutex, INFINITE);
+
+			if (p->cb)
 				p->cb(p->state);
-			mus_rewind(p->score);
+
 			SetEvent(p->ready);
 			ReleaseMutex(p->mutex);
-			WaitForSingleObject(p->event, INFINITE);
+
 			break;
 		}
-
-		WaitForSingleObject(p->mutex, INFINITE);
 	}
-	ReleaseMutex(p->mutex);
 
-    return 0;
+	return 0;
 }
 
 static HANDLE players_mutex = NULL;
@@ -249,12 +232,11 @@ static struct mus_player* players = NULL; // player handle list.
  * @return Returns MMSYSERR_NOERROR if successful, MMSYSERR_ERROR if the mutex
  *  could not be initialized.
  */
-MMRESULT mus_init()
-{
+MMRESULT mus_init() {
 	players = NULL;
 
 	players_mutex = CreateMutex(NULL, FALSE, NULL);
-	if(players_mutex == NULL)
+	if (players_mutex == NULL)
 		return MMSYSERR_ERROR;
 
 	return MMSYSERR_NOERROR;
@@ -270,13 +252,11 @@ MMRESULT mus_init()
  * mus_score_close() is called on the handle which will remove it form the
  * global list.
  */
-void mus_shutdown()
-{
+void mus_shutdown() {
 	struct mus_player* tmp = NULL;
 	WaitForSingleObject(players_mutex, INFINITE);
 	tmp = players;
-	while(tmp != NULL)
-	{
+	while (tmp != NULL) {
 		ReleaseMutex(players_mutex);
 
 		// This function acquires players_mutex and tmp->mutex so make sure
@@ -306,79 +286,86 @@ void mus_shutdown()
  *
  * @return The handle to the new player or NULL if creation failed.
  */
-static struct mus_player* mus_player_init()
-{
+static struct mus_player* mus_player_init(mus_notify_cb callback) {
 	struct mus_player* p = (struct mus_player*)malloc(sizeof(struct mus_player));
-	if(p != NULL)
-	{
-		// Initialize the double buffers.
-		ZeroMemory(&p->header[0], sizeof(MIDIHDR));
-		p->header[0].lpData = (char*)malloc(MAX_BUFFER_SIZE);
-		if(p->header[0].lpData == NULL)
-			goto error1;
-		p->header[0].dwBufferLength = p->header[0].dwBytesRecorded = MAX_BUFFER_SIZE;
+	if (p == NULL)
+		return NULL;
 
-		ZeroMemory(&p->header[1], sizeof(MIDIHDR));
-		p->header[1].lpData = (char*)malloc(MAX_BUFFER_SIZE);
-		if(p->header[1].lpData == NULL)
-			goto error2;
-		p->header[1].dwBufferLength = p->header[1].dwBytesRecorded = MAX_BUFFER_SIZE;
+	// Initialize the double buffers.
+	ZeroMemory(&p->header[0], sizeof(MIDIHDR));
+	p->header[0].lpData = (char*)malloc(MAX_BUFFER_SIZE);
+	if (p->header[0].lpData == NULL)
+		goto error1;
 
-		p->device = 0;
-		p->score = NULL;
-		p->state = STATE_STOPPED;
-		p->timebase = 70;
-		p->looping = 0;
-		p->stream = 0;
-		p->cb = NULL;
+	p->header[0].dwBufferLength = p->header[0].dwBytesRecorded = MAX_BUFFER_SIZE;
 
-		// Create the internal mutex.
-		p->mutex = CreateMutex(NULL, FALSE, NULL);
-		if(p->mutex == NULL)
-		{
-			fprintf(stderr, "CreateMutex failed %lu\n", GetLastError());
-			goto error3;
-		}
+	ZeroMemory(&p->header[1], sizeof(MIDIHDR));
+	p->header[1].lpData = (char*)malloc(MAX_BUFFER_SIZE);
+	if (p->header[1].lpData == NULL)
+		goto error2;
 
-		// Create the event object that is signaled by the MIDI api and state
-		// changes.
-		p->event = CreateEvent(0, FALSE, FALSE, 0);
-		if(p->event == NULL)
-		{
-			fprintf(stderr, "CreateEvent failed %lu\n", GetLastError());
-			goto error3;
-		}
+	p->header[1].dwBufferLength = p->header[1].dwBytesRecorded = MAX_BUFFER_SIZE;
 
-		// Create the event that signals when the player is stopped and ready.
-		// This event is used in this function when the thread is first
-		// initialized. It is also used in mus_stop() to signal when the thread
-		// has settled into its STATE_STOPPED state.
-		p->ready = CreateEvent(0, FALSE, FALSE, 0);
-		if(p->ready == NULL)
-		{
-			fprintf(stderr, "CreateEvent failed %lu\n", GetLastError());
-			goto error3;
-		}
+	p->device = 0;
+	p->score = NULL;
+	p->state = STATE_STOPPED;
+	p->timebase = 70;
+	p->looping = 0;
+	p->stream = 0;
+	p->cb = callback;
 
-		// Finally, spawn the worker thread.
-		p->thread = CreateThread(NULL, 0, mus_player_proc, p, 0, NULL);
-		if(p->thread == NULL)
-		{
-			fprintf(stderr, "CreateThread failed %lu\n", GetLastError());
-			goto error3;
-		}
-
-		// Make sure the thread is spun up and ready.
-		WaitForSingleObject(p->ready, INFINITE);
-		return p;
+	// Create the internal mutex.
+	p->mutex = CreateMutex(NULL, FALSE, NULL);
+	if (p->mutex == NULL) {
+		fprintf(stderr, "CreateMutex failed %lu\n", GetLastError());
+		goto error3;
 	}
-error3:
+
+	// Create the event object that is signaled by the MIDI api and state
+	// changes.
+	p->event = CreateEvent(0, FALSE, TRUE, 0);
+	if (p->event == NULL) {
+		fprintf(stderr, "CreateEvent failed %lu\n", GetLastError());
+		goto error4;
+	}
+
+	// Create the event that signals when the player is stopped and ready.
+	// This event is used in this function when the thread is first
+	// initialized. It is also used in mus_stop() to signal when the thread
+	// has settled into its STATE_STOPPED state.
+	p->ready = CreateEvent(0, FALSE, FALSE, 0);
+	if (p->ready == NULL) {
+		fprintf(stderr, "CreateEvent failed %lu\n", GetLastError());
+		goto error5;
+	}
+
+	// Finally, spawn the worker thread.
+	p->thread = CreateThread(NULL, 0, mus_player_proc, p, 0, NULL);
+	if (p->thread == NULL) {
+		fprintf(stderr, "CreateThread failed %lu\n", GetLastError());
+		goto error6;
+	}
+
+	// Make sure the thread is spun up and ready.
+	WaitForSingleObject(p->ready, INFINITE);
+	return p;
+
+	error6:
+	CloseHandle(p->ready);
+
+	error5:
+	CloseHandle(p->event);
+
+	error4:
+	CloseHandle(p->mutex);
+
+	error3:
 	free(p->header[1].lpData);
 
-error2:
+	error2:
 	free(p->header[0].lpData);
 
-error1:
+	error1:
 	free(p);
 	return NULL;
 }
@@ -400,8 +387,7 @@ error1:
  *
  * @param p
  */
-static void mus_player_shutdown(struct mus_player* p)
-{
+static void mus_player_shutdown(struct mus_player* p) {
 	WaitForSingleObject(p->mutex, INFINITE);
 	p->state = STATE_SHUTDOWN;
 	SetEvent(p->event);
@@ -417,6 +403,48 @@ static void mus_player_shutdown(struct mus_player* p)
 	free(p);
 }
 
+static void mus_add_player(struct mus_player* p) {
+	WaitForSingleObject(players_mutex, INFINITE);
+
+	if (players == NULL) {
+		players = p;
+		p->next = NULL;
+	} else {
+		struct mus_player* tmp = players;
+		while (tmp != p && tmp->next != NULL) {
+			tmp = tmp->next;
+		}
+
+		if (tmp == p)
+			return;
+
+		tmp->next = p;
+		p->next = NULL;
+	}
+
+	ReleaseMutex(players_mutex);
+}
+
+static struct mus_player* mus_remove_player(struct mus_player* p) {
+	struct mus_player* tmp = players;
+
+	if (players == p) { // is p the first in the list?
+		players = p->next;
+		return p;
+	}
+
+	while (tmp != NULL && tmp->next != p) {
+		tmp = tmp->next;
+	}
+
+	if (tmp == NULL) // tmp can only be NULL if we've never added p.
+		return NULL;
+
+	tmp->next = p->next;
+	p->next = NULL;
+
+	return p;
+}
 /*!
  * This function prepares a buffer for playing.
  *
@@ -428,28 +456,27 @@ static void mus_player_shutdown(struct mus_player* p)
  * @return Returns a HANDLE value if successful, NULL otherwise. This HANDLE
  * value must be closed by calling mus_score_close() when finished.
  */
-HANDLE mus_score_open(unsigned char* buf, unsigned int len)
-{
+HANDLE mus_score_open(unsigned char* buf, unsigned int len, mus_notify_cb callback) {
 	unsigned int err = MMSYSERR_NOERROR;
 	struct mus_player* p = NULL;
 	struct mus_score* s = NULL;
 
-	if(!is_mus_header(buf, len))
+	if (!is_mus_header(buf, len))
 		goto error1;
 
-	p = mus_player_init();
-	if(p == NULL)
+	p = mus_player_init(callback);
+	if (p == NULL)
 		goto error1;
 
 	// We have a player, buffers initialized and thread spun up and
 	// ready. Prepare the score data for processing.
 
 	s = (struct mus_score*)malloc(sizeof(struct mus_score));
-	if(s == NULL)
+	if (s == NULL)
 		goto error2;
 
 	s->raw_bytes = (unsigned char*)malloc(len);
-	if(s->raw_bytes == NULL)
+	if (s->raw_bytes == NULL)
 		goto error3;
 	memcpy(s->raw_bytes, buf, len);
 	s->raw_len = len;
@@ -462,22 +489,18 @@ HANDLE mus_score_open(unsigned char* buf, unsigned int len)
 
 	// Score is loaded and ready. Add the player to our global list
 	// and return the "HANDLE" to the user.
-
-	WaitForSingleObject(players_mutex, INFINITE);
-	p->next = players;
-	players = p;
-	ReleaseMutex(players_mutex);
+	mus_add_player(p);
 
 	return p;
 
-error3:
+	error3:
 	free(s);
 
-error2:
+	error2:
 	mus_player_shutdown(p);
 	p = NULL;
 
-error1:
+	error1:
 	return NULL;
 }
 
@@ -503,15 +526,13 @@ error1:
  * @param h
  * @return
  */
-static BOOL mus_is_handle_valid(HANDLE h)
-{
+static BOOL mus_is_handle_valid(HANDLE h) {
 	struct mus_player* p = players;
-	if(h == NULL)
+	if (h == NULL)
 		return FALSE;
 
-	while(p != NULL)
-	{
-		if(p == h)
+	while (p != NULL) {
+		if (p == h)
 			return TRUE;
 		else
 			p = p->next;
@@ -530,50 +551,42 @@ static BOOL mus_is_handle_valid(HANDLE h)
  *
  * @param p
  */
-static void mus_close_stream(struct mus_player* p)
-{
+static void mus_close_stream(struct mus_player* p) {
 	unsigned int err;
 	p->state = STATE_STOPPED;
 	midiOutReset((HMIDIOUT)p->stream);
 	err = midiOutUnprepareHeader((HMIDIOUT)p->stream, &p->header[0], sizeof(MIDIHDR));
-	if(err != MMSYSERR_NOERROR)
+	if (err != MMSYSERR_NOERROR)
 		printf("midiOutUnprepareHeader %d\n", err);
 	err = midiOutUnprepareHeader((HMIDIOUT)p->stream, &p->header[1], sizeof(MIDIHDR));
-	if(err != MMSYSERR_NOERROR)
+	if (err != MMSYSERR_NOERROR)
 		printf("midiOutUnprepareHeader %d\n", err);
 	midiStreamClose(p->stream);
 	p->stream = 0;
 }
 
-void mus_score_close(HANDLE h)
-{
+void mus_score_close(HANDLE h) {
 	struct mus_player* p = NULL;
 
 	WaitForSingleObject(players_mutex, INFINITE);
-	if(mus_is_handle_valid(h) == FALSE)
-	{
+	if (mus_is_handle_valid(h) == FALSE) {
 		ReleaseMutex(players_mutex);
 		return;
 	}
 
 	p = players;
-	if(p == h) // if h is the first in the list
+	if (p == h) // if h is the first in the list
 	{
 		players = p->next;
 		p->next = NULL;
-	}
-	else
-	{
-		while(p != NULL)
-		{
-			if(p->next == h)
-			{
+	} else {
+		while (p != NULL) {
+			if (p->next == h) {
 				p->next = p->next->next;
 				p = h;
 				p->next = NULL;
 				break;
-			}
-			else
+			} else
 				p = p->next;
 		}
 	}
@@ -585,21 +598,19 @@ void mus_score_close(HANDLE h)
 
 	// Start shutting down the thread. If it's still playing, stop it.
 	WaitForSingleObject(p->mutex, INFINITE);
-	if(p->state != STATE_STOPPED)
-	{
+	if (p->state != STATE_STOPPED) {
 		ResetEvent(p->ready);
 		mus_close_stream(p);
 		SetEvent(p->event);
 		ReleaseMutex(p->mutex);
 		WaitForSingleObject(p->ready, INFINITE);
-	}
-	else
+	} else
 		ReleaseMutex(p->mutex);
 
 	// Player thread should be in the STATE_STOPPED state. No existing
 	// handles can restart it. Let's close things out.
 
-	if(p->score)
+	if (p->score)
 		free(p->score->raw_bytes);
 
 	free(p->score);
@@ -610,129 +621,128 @@ void mus_score_close(HANDLE h)
 	return;
 }
 
-MMRESULT mus_play(HANDLE h)
-{
+MMRESULT mus_play(HANDLE h) {
 	struct mus_player* p = (struct mus_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
 	MIDIPROPTIMEDIV prop;
 
 	WaitForSingleObject(players_mutex, INFINITE);
-	if(mus_is_handle_valid(h) == FALSE)
-	{
+	if (mus_is_handle_valid(h) == FALSE) {
 		ReleaseMutex(players_mutex);
 		return MMSYSERR_INVALPARAM;
 	}
 
 	WaitForSingleObject(p->mutex, INFINITE);
 	ReleaseMutex(players_mutex);
-	if(p->state == STATE_STOPPED)
-	{
+
+	if (p->state == STATE_STOPPED) {
 		err = midiStreamOpen(&p->stream, &p->device, 1, (DWORD_PTR)mus_callback_proc, (DWORD_PTR)p, CALLBACK_FUNCTION);
-		if(err != MMSYSERR_NOERROR)
-		{
+		if (err != MMSYSERR_NOERROR) {
 			printf("Error opening stream %d\n", err);
 			goto error;
 		}
 
 		prop.cbStruct = sizeof(MIDIPROPTIMEDIV);
 		prop.dwTimeDiv = p->timebase;
-		err = midiStreamProperty(p->stream, (LPBYTE)&prop, MIDIPROP_SET|MIDIPROP_TIMEDIV);
-		if(err != MMSYSERR_NOERROR)
-		{
+		err = midiStreamProperty(p->stream, (LPBYTE)&prop, MIDIPROP_SET | MIDIPROP_TIMEDIV);
+		if (err != MMSYSERR_NOERROR) {
 			printf("midiStreamProperty %d\n", err);
 			goto error;
 		}
 
 		mus_get_streambuf(p->score, (unsigned int*)p->header[0].lpData, (unsigned int*)&p->header[0].dwBufferLength);
 		p->header[0].dwBytesRecorded = p->header[0].dwBufferLength;
+		if(p->header[0].dwBytesRecorded <= 0) {
+			printf("MUS buffer is empty\n");
+			goto error;
+		}
+
 		p->header[0].dwFlags = 0;
 		err = midiOutPrepareHeader((HMIDIOUT)p->stream, &p->header[0], sizeof(MIDIHDR));
-		if(err != MMSYSERR_NOERROR)
-		{
+		if (err != MMSYSERR_NOERROR) {
 			printf("midiOutPrepareHeader %d\n", err);
 			goto error;
 		}
 
-		err = midiStreamOut(p->stream, &p->header[0], sizeof(MIDIHDR));
-		if(err == MMSYSERR_NOERROR)
-		{
+		err = midiStreamOut(p->stream, &p->header[0], sizeof(MIDIHDR)); // Queue the first buffer of midi events
+		if (err == MMSYSERR_NOERROR) {
 			mus_get_streambuf(p->score, (unsigned int*)p->header[1].lpData, (unsigned int*)&p->header[1].dwBufferLength);
-			p->header[1].dwBytesRecorded = p->header[1].dwBufferLength;
-			p->header[1].dwFlags = 0;
-			err = midiOutPrepareHeader((HMIDIOUT)p->stream, &p->header[1], sizeof(MIDIHDR));
-			if(err != MMSYSERR_NOERROR)
-			{
-				printf("midiOutPrepareHeader %d\n", err);
-				goto error;
+				p->header[1].dwBytesRecorded = p->header[1].dwBufferLength;
+
+			if(p->header[1].dwBytesRecorded > 0) {
+				p->header[1].dwFlags = 0;
+				err = midiOutPrepareHeader((HMIDIOUT)p->stream, &p->header[1], sizeof(MIDIHDR));
+				if (err != MMSYSERR_NOERROR) {
+					printf("midiOutPrepareHeader %d\n", err);
+					goto error;
+				}
+
+				err = midiStreamOut(p->stream, &p->header[1], sizeof(MIDIHDR)); // Queue the second buffer of midi events
+				if (err != MMSYSERR_NOERROR) {
+					printf("midiStreamOut %d\n", err);
+					goto error;
+				}
 			}
 
-			err = midiStreamOut(p->stream, &p->header[1], sizeof(MIDIHDR));
-			if(err == MMSYSERR_NOERROR)
-			{
-				err = midiStreamRestart(p->stream);
-				if(err == MMSYSERR_NOERROR)
-				{
-					p->state = STATE_PLAYING;
-					SetEvent(p->event);
-				}
+			// midiStreamOpen opens the stream in paused mode so we call restart to begin playing.
+			err = midiStreamRestart(p->stream);
+			if (err == MMSYSERR_NOERROR) {
+				p->state = STATE_STARTING;
+				SetEvent(p->event);
 			}
 		}
 	}
+
 error:
 	ReleaseMutex(p->mutex);
 
 	return err;
 }
 
-MMRESULT mus_stop(HANDLE h)
-{
+MMRESULT mus_stop(HANDLE h) {
 	struct mus_player* p = (struct mus_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
 
 	WaitForSingleObject(players_mutex, INFINITE);
-	if(mus_is_handle_valid(h) == FALSE)
-	{
+	if (mus_is_handle_valid(h) == FALSE) {
 		ReleaseMutex(players_mutex);
 		return MMSYSERR_INVALPARAM;
 	}
 
 	WaitForSingleObject(p->mutex, INFINITE);
 	ReleaseMutex(players_mutex);
-	if(p->state != STATE_STOPPED)
-	{
+	if (p->state != STATE_STOPPED) {
 		ResetEvent(p->ready);
+
 		mus_close_stream(p);
+		mus_rewind(p->score);
+
 		SetEvent(p->event);
 		ReleaseMutex(p->mutex);
 		WaitForSingleObject(p->ready, INFINITE);
-	}
-	else
+	} else
 		ReleaseMutex(p->mutex);
 
 	return MMSYSERR_NOERROR;
 }
 
-MMRESULT mus_pause(HANDLE h)
-{
+MMRESULT mus_pause(HANDLE h) {
 	struct mus_player* p = (struct mus_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
 
 	WaitForSingleObject(players_mutex, INFINITE);
-	if(mus_is_handle_valid(h) == FALSE)
-	{
+	if (mus_is_handle_valid(h) == FALSE) {
 		ReleaseMutex(players_mutex);
 		return MMSYSERR_INVALPARAM;
 	}
 
 	WaitForSingleObject(p->mutex, INFINITE);
 	ReleaseMutex(players_mutex);
-	if(p->state == STATE_PLAYING)
-	{
+	if (p->state == STATE_PLAYING) {
 		err = midiStreamPause(p->stream);
-		if(err == MMSYSERR_NOERROR)
+		if (err == MMSYSERR_NOERROR)
 			p->state = STATE_PAUSED;
-		else
-		{
+		else {
 			printf("err pausing: %d\n", err);
 			p->state = STATE_ERROR;
 		}
@@ -742,27 +752,23 @@ MMRESULT mus_pause(HANDLE h)
 	return err;
 }
 
-MMRESULT mus_resume(HANDLE h)
-{
+MMRESULT mus_resume(HANDLE h) {
 	struct mus_player* p = (struct mus_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
 
 	WaitForSingleObject(players_mutex, INFINITE);
-	if(mus_is_handle_valid(h) == FALSE)
-	{
+	if (mus_is_handle_valid(h) == FALSE) {
 		ReleaseMutex(players_mutex);
 		return MMSYSERR_INVALPARAM;
 	}
 
 	WaitForSingleObject(p->mutex, INFINITE);
 	ReleaseMutex(players_mutex);
-	if(p->state == STATE_PAUSED)
-	{
+	if (p->state == STATE_PAUSED) {
 		err = midiStreamRestart(p->stream);
-		if(err == MMSYSERR_NOERROR)
+		if (err == MMSYSERR_NOERROR)
 			p->state = STATE_PLAYING;
-		else
-		{
+		else {
 			printf("err restart: %d\n", err);
 			p->state = STATE_ERROR;
 		}
@@ -772,8 +778,7 @@ MMRESULT mus_resume(HANDLE h)
 	return err;
 }
 
-MMRESULT mus_set_volume_left(HANDLE h, unsigned int level)
-{
+MMRESULT mus_set_volume_left(HANDLE h, unsigned int level) {
 	unsigned int old = 0, vol = 0;
 	struct mus_player* p = (struct mus_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
@@ -782,28 +787,25 @@ MMRESULT mus_set_volume_left(HANDLE h, unsigned int level)
 
 	WaitForSingleObject(players_mutex, INFINITE);
 	valid = mus_is_handle_valid(h);
-	if(valid == TRUE)
-	{
+	if (valid == TRUE) {
 		stream = p->stream;
 		WaitForSingleObject(p->mutex, INFINITE);
 	}
 	ReleaseMutex(players_mutex);
 
 	err = midiOutGetVolume((HMIDIOUT)stream, (LPDWORD)&old);
-	if(err == MMSYSERR_NOERROR)
-	{
+	if (err == MMSYSERR_NOERROR) {
 		vol = MAKELONG(LOWORD(level), HIWORD(old));
 		err = midiOutSetVolume((HMIDIOUT)stream, vol);
 	}
 
-	if(valid == TRUE)
+	if (valid == TRUE)
 		ReleaseMutex(p->mutex);
 
 	return err;
 }
 
-MMRESULT mus_set_volume_right(HANDLE h, unsigned int level)
-{
+MMRESULT mus_set_volume_right(HANDLE h, unsigned int level) {
 	unsigned int old = 0, vol = 0;
 	struct mus_player* p = (struct mus_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
@@ -812,39 +814,35 @@ MMRESULT mus_set_volume_right(HANDLE h, unsigned int level)
 
 	WaitForSingleObject(players_mutex, INFINITE);
 	valid = mus_is_handle_valid(h);
-	if(valid == TRUE)
-	{
+	if (valid == TRUE) {
 		stream = p->stream;
 		WaitForSingleObject(p->mutex, INFINITE);
 	}
 	ReleaseMutex(players_mutex);
 
 	err = midiOutGetVolume((HMIDIOUT)stream, (LPDWORD)&old);
-	if(err == MMSYSERR_NOERROR)
-	{
+	if (err == MMSYSERR_NOERROR) {
 		vol = MAKELONG(LOWORD(old), LOWORD(level));
 		err = midiOutSetVolume((HMIDIOUT)stream, vol);
 	}
 
-	if(valid == TRUE)
+	if (valid == TRUE)
 		ReleaseMutex(p->mutex);
 
 	return err;
 }
 
-MMRESULT mus_set_volume(HANDLE h, unsigned int level)
-{
+MMRESULT mus_set_volume(HANDLE h, unsigned int level) {
 	unsigned int err = MMSYSERR_NOERROR;
 
 	err = mus_set_volume_left(h, level);
-	if(err == MMSYSERR_NOERROR)
+	if (err == MMSYSERR_NOERROR)
 		err = mus_set_volume_right(h, level);
 
 	return err;
 }
 
-MMRESULT mus_volume_left(HANDLE h, unsigned int dir)
-{
+MMRESULT mus_volume_left(HANDLE h, unsigned int dir) {
 	unsigned int old = 0, vol = 0;
 	const unsigned int val = 3277;
 	struct mus_player* p = (struct mus_player*)h;
@@ -854,28 +852,23 @@ MMRESULT mus_volume_left(HANDLE h, unsigned int dir)
 
 	WaitForSingleObject(players_mutex, INFINITE);
 	valid = mus_is_handle_valid(h);
-	if(valid == TRUE)
-	{
+	if (valid == TRUE) {
 		stream = p->stream;
 		WaitForSingleObject(p->mutex, INFINITE);
 	}
 	ReleaseMutex(players_mutex);
 
 	err = midiOutGetVolume((HMIDIOUT)stream, (LPDWORD)&old);
-	if(err == MMSYSERR_NOERROR)
-	{
+	if (err == MMSYSERR_NOERROR) {
 		vol = LOWORD(old);
 
-		if(dir == VOL_UP)
-		{
-			if(0xffff - vol <= val)
+		if (dir == VOL_UP) {
+			if (0xffff - vol <= val)
 				vol = 0xffff;
 			else
 				vol += val;
-		}
-		else
-		{
-			if(vol <= val)
+		} else {
+			if (vol <= val)
 				vol = 0;
 			else
 				vol -= val;
@@ -885,14 +878,13 @@ MMRESULT mus_volume_left(HANDLE h, unsigned int dir)
 		err = midiOutSetVolume((HMIDIOUT)stream, vol);
 	}
 
-	if(valid == TRUE)
+	if (valid == TRUE)
 		ReleaseMutex(p->mutex);
 
 	return err;
 }
 
-MMRESULT mus_volume_right(HANDLE h, unsigned int dir)
-{
+MMRESULT mus_volume_right(HANDLE h, unsigned int dir) {
 	unsigned int old = 0, vol = 0;
 	const unsigned int val = 3277;
 	struct mus_player* p = (struct mus_player*)h;
@@ -902,28 +894,23 @@ MMRESULT mus_volume_right(HANDLE h, unsigned int dir)
 
 	WaitForSingleObject(players_mutex, INFINITE);
 	valid = mus_is_handle_valid(h);
-	if(valid == TRUE)
-	{
+	if (valid == TRUE) {
 		stream = p->stream;
 		WaitForSingleObject(p->mutex, INFINITE);
 	}
 	ReleaseMutex(players_mutex);
 
 	err = midiOutGetVolume((HMIDIOUT)stream, (LPDWORD)&old);
-	if(err == MMSYSERR_NOERROR)
-	{
+	if (err == MMSYSERR_NOERROR) {
 		vol = HIWORD(old);
 
-		if(dir == VOL_UP)
-		{
-			if(0xffff - vol <= val)
+		if (dir == VOL_UP) {
+			if (0xffff - vol <= val)
 				vol = 0xffff;
 			else
 				vol += val;
-		}
-		else
-		{
-			if(vol <= val)
+		} else {
+			if (vol <= val)
 				vol = 0;
 			else
 				vol -= val;
@@ -933,31 +920,28 @@ MMRESULT mus_volume_right(HANDLE h, unsigned int dir)
 		err = midiOutSetVolume((HMIDIOUT)stream, vol);
 	}
 
-	if(valid == TRUE)
+	if (valid == TRUE)
 		ReleaseMutex(p->mutex);
 
 	return err;
 }
 
-MMRESULT mus_volume(HANDLE h, unsigned int dir)
-{
+MMRESULT mus_volume(HANDLE h, unsigned int dir) {
 	unsigned int err;
 
 	err = mus_volume_left(h, dir);
-	if(err == MMSYSERR_NOERROR)
+	if (err == MMSYSERR_NOERROR)
 		err = mus_volume_right(h, dir);
 
 	return err;
 }
 
-MMRESULT mus_set_looping(HANDLE h, BOOL looping)
-{
+MMRESULT mus_set_looping(HANDLE h, BOOL looping) {
 	struct mus_player* p = (struct mus_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
 
 	WaitForSingleObject(players_mutex, INFINITE);
-	if(mus_is_handle_valid(h) == FALSE)
-	{
+	if (mus_is_handle_valid(h) == FALSE) {
 		ReleaseMutex(players_mutex);
 		return MMSYSERR_INVALPARAM;
 	}
@@ -972,15 +956,13 @@ MMRESULT mus_set_looping(HANDLE h, BOOL looping)
 	return MMSYSERR_NOERROR;
 }
 
-BOOL mus_get_looping(HANDLE h)
-{
+BOOL mus_get_looping(HANDLE h) {
 	struct mus_player* p = (struct mus_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
 	BOOL looping;
 
 	WaitForSingleObject(players_mutex, INFINITE);
-	if(mus_is_handle_valid(h) == FALSE)
-	{
+	if (mus_is_handle_valid(h) == FALSE) {
 		ReleaseMutex(players_mutex);
 		return FALSE;
 	}
@@ -995,13 +977,12 @@ BOOL mus_get_looping(HANDLE h)
 	return looping;
 }
 
-BOOL mus_is_playing(HANDLE h)
-{
+BOOL mus_is_playing(HANDLE h) {
 	struct mus_player* p = (struct mus_player*)h;
 	BOOL ret = FALSE;
 
 	WaitForSingleObject(players_mutex, INFINITE);
-	if(mus_is_handle_valid(h) == FALSE)
+	if (mus_is_handle_valid(h) == FALSE)
 		ret = FALSE;
 	else
 		ret = (p->state == STATE_PLAYING);
@@ -1010,28 +991,26 @@ BOOL mus_is_playing(HANDLE h)
 	return ret;
 }
 
-BOOL mus_is_paused(HANDLE h)
-{
+BOOL mus_is_paused(HANDLE h) {
 	struct mus_player* p = (struct mus_player*)h;
 	BOOL ret = FALSE;
 
 	WaitForSingleObject(players_mutex, INFINITE);
-	if(mus_is_handle_valid(h) == FALSE)
+	if (mus_is_handle_valid(h) == FALSE)
 		ret = FALSE;
 	else
 		ret = (p->state == STATE_PAUSED);
 	ReleaseMutex(players_mutex);
-	
+
 	return ret;
 }
 
-BOOL mus_is_stopped(HANDLE h)
-{
+BOOL mus_is_stopped(HANDLE h) {
 	struct mus_player* p = (struct mus_player*)h;
 	BOOL ret = FALSE;
 
 	WaitForSingleObject(players_mutex, INFINITE);
-	if(mus_is_handle_valid(h) == FALSE)
+	if (mus_is_handle_valid(h) == FALSE)
 		ret = FALSE;
 	else
 		ret = (p->state == STATE_STOPPED);
@@ -1040,11 +1019,9 @@ BOOL mus_is_stopped(HANDLE h)
 	return ret;
 }
 
-static void mus_rewind(struct mus_score* m)
-{
+static void mus_rewind(struct mus_score* m) {
 	struct _mus_header* hdr = NULL;
-	if(m != NULL)
-	{
+	if (m != NULL) {
 		m->volume = 0;
 		m->ticks = 0;
 
@@ -1057,8 +1034,7 @@ static unsigned int mus2mid_controller_map[128] = {0, 0, 1, 7, 10, 11, 91, 93, 6
 static unsigned int mus2mid_channel_map[16] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 9};
 static unsigned int mus_velocity_map[16] = {64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64};
 
-static struct mus_player_event mus_get_next_event(const struct mus_score* m)
-{
+static struct mus_player_event mus_get_next_event(const struct mus_score* m) {
 	struct mus_player_event e;
 
 	e.ptr = m->ptr;
@@ -1067,8 +1043,7 @@ static struct mus_player_event mus_get_next_event(const struct mus_score* m)
 	return e;
 }
 
-static unsigned int mus_pack_event(unsigned char command, unsigned char channel, unsigned char a, unsigned char b)
-{
+static unsigned int mus_pack_event(unsigned char command, unsigned char channel, unsigned char a, unsigned char b) {
 	unsigned int event;
 
 	union {
@@ -1085,23 +1060,21 @@ static unsigned int mus_pack_event(unsigned char command, unsigned char channel,
 	mevt.one = 1;
 
 	event = ((unsigned long)MEVT_SHORTMSG << 24) |
-				((unsigned long)mevt.byte << 0) |
-				((unsigned long)a << 8) |
-				((unsigned long)b << 16);
+		((unsigned long)mevt.byte << 0) |
+		((unsigned long)a << 8) |
+		((unsigned long)b << 16);
 
 	return event;
 }
 
-static unsigned int mus_get_channel(unsigned int channel)
-{
+static unsigned int mus_get_channel(unsigned int channel) {
 	static unsigned int c = 0;
 	unsigned int ret = mus2mid_channel_map[channel];
 
-	if(ret == -1)
-	{
+	if (ret == -1) {
 		ret = c;
 		c++;
-		if(c == 9) // mus 15 always maps to midi 9
+		if (c == 9) // mus 15 always maps to midi 9
 			c++;
 
 		mus2mid_channel_map[channel] = ret;
@@ -1110,31 +1083,29 @@ static unsigned int mus_get_channel(unsigned int channel)
 	return ret;
 }
 
-static unsigned int mus_get_streambuf(struct mus_score* m, unsigned int* out, unsigned int* outlen)
-{
-	MIDIEVENT e, *p;
+static unsigned int mus_get_streambuf(struct mus_score* m, unsigned int* out, unsigned int* outlen) {
+	MIDIEVENT e, * p;
 
 	unsigned int streamlen = 0;
 
 	*outlen = 0;
 
-	while(m->ptr < m->raw_bytes + m->raw_len)
-	{
+	while (m->ptr < m->raw_bytes + m->raw_len) {
 		struct mus_player_event evt;
 		unsigned int bytesread = 0;
 		unsigned char a, b;
 		unsigned int pitch;
 
+		// break out if this buffer is full
+		if (((streamlen + 3) * sizeof(unsigned int)) >= MAX_BUFFER_SIZE)
+			break;
+
 		// get the next event
 		evt = mus_get_next_event(m);
 
-		if(((streamlen + 3) * sizeof(unsigned int)) >= MAX_BUFFER_SIZE)
-			break;
-
 		e.dwStreamID = 0; // always 0
 
-		switch(evt.command)
-		{
+		switch (evt.command) {
 		case 0: // note off
 			a = *evt.ptr++; // note
 			b = 0; // velocity
@@ -1143,8 +1114,7 @@ static unsigned int mus_get_streambuf(struct mus_score* m, unsigned int* out, un
 			break;
 		case 1: // note on
 			a = *evt.ptr++; // note
-			if(a & 0x80)
-			{
+			if (a & 0x80) {
 				a &= 0x7f; // clear the volume flag
 				mus_velocity_map[evt.channel] = *evt.ptr++; // get the new volume
 			}
@@ -1173,12 +1143,10 @@ static unsigned int mus_get_streambuf(struct mus_score* m, unsigned int* out, un
 			a = *evt.ptr++; // controller
 			b = *evt.ptr++; // value
 
-			if(a == 0) // patch change
+			if (a == 0) // patch change
 			{
 				e.dwEvent = mus_pack_event(MID_EVENT_PATCH_CHANGE, mus_get_channel(evt.channel), b, 0);
-			}
-			else
-			{
+			} else {
 				a = mus2mid_controller_map[a]; // convert it to midi
 
 				e.dwEvent = mus_pack_event(MID_EVENT_CONTROLLER_CHANGE, mus_get_channel(evt.channel), a, b);
@@ -1205,12 +1173,10 @@ static unsigned int mus_get_streambuf(struct mus_score* m, unsigned int* out, un
 
 		streamlen += 3;
 
-		if(evt.last)
-		{
+		if (evt.last) {
 			m->ticks = read_var_long(evt.ptr, &bytesread);
 			evt.ptr += bytesread;
-		}
-		else
+		} else
 			m->ticks = 0;
 
 		m->ptr = evt.ptr;
@@ -1221,23 +1187,22 @@ static unsigned int mus_get_streambuf(struct mus_score* m, unsigned int* out, un
 	return 0;
 }
 
-unsigned int is_mus_header(unsigned char* buf, unsigned int len)
-{
+unsigned int is_mus_header(unsigned char* buf, unsigned int len) {
 	struct _mus_header* hdr;
 
-	if(buf == NULL)
+	if (buf == NULL)
 		return 0;
 
-	if(len < sizeof(struct _mus_header))
+	if (len < sizeof(struct _mus_header))
 		return 0;
 
 	hdr = (struct _mus_header*)buf;
-	if(hdr->id != MUS_ID)
+	if (hdr->id != MUS_ID)
 		return 0;
 
 	len -= hdr->score_start;
 	len -= hdr->score_len;
-	if(len != 0)
+	if (len != 0)
 		return 0;
 
 	return 1;
@@ -1247,13 +1212,11 @@ unsigned int is_mus_header(unsigned char* buf, unsigned int len)
 
 unsigned char* load_file(unsigned char* filename, unsigned int* len);
 
-void mus_callback(unsigned int val)
-{
+void mus_callback(unsigned int val) {
 	printf("\r       \rStopped");
 }
 
-int main(int argc, char* argv[])
-{
+int main(int argc, char* argv[]) {
 	unsigned char* filename;
 	unsigned char* musbuf = NULL;
 	unsigned int musbuflen = 0;
@@ -1267,98 +1230,79 @@ int main(int argc, char* argv[])
 
 	setvbuf(stdout, NULL, _IONBF, 0);
 
-	if(argc > 1)
+	if (argc > 1)
 		filename = (unsigned char*)argv[1];
-	else
-	{
+	else {
 		printf("Usage: %s <filename>\n", argv[0]);
 		return 0;
 	}
 
 	n = midiOutGetNumDevs();
 
-	for (i = 0; i < n; i++)
-	{
-	    if (!midiOutGetDevCaps(i, &caps, sizeof(MIDIOUTCAPS)))
-	    {
-	        printf("Device %lu: %s\r\n", i, caps.szPname);
-	        if(caps.dwSupport & MIDICAPS_CACHE)
-	        {
-	        	printf(" - supports patch caching.\n");
-	        }
-	        if(caps.dwSupport & MIDICAPS_VOLUME)
-	        {
-	        	printf(" - supports volume control.\n");
-	        }
-	        if(caps.dwSupport & MIDICAPS_LRVOLUME)
-	        {
-	        	printf(" - supports separate left and right volume control.\n");
-	        }
-	        if(caps.dwSupport & MIDICAPS_STREAM)
-	        {
-	        	printf(" - provides direct support for the midiStreamOut function.\n");
-	        }
-	        printf("\n");
-	    }
+	for (i = 0; i < n; i++) {
+		if (!midiOutGetDevCaps(i, &caps, sizeof(MIDIOUTCAPS))) {
+			printf("Device %lu: %s\r\n", i, caps.szPname);
+			if (caps.dwSupport & MIDICAPS_CACHE) {
+				printf(" - supports patch caching.\n");
+			}
+			if (caps.dwSupport & MIDICAPS_VOLUME) {
+				printf(" - supports volume control.\n");
+			}
+			if (caps.dwSupport & MIDICAPS_LRVOLUME) {
+				printf(" - supports separate left and right volume control.\n");
+			}
+			if (caps.dwSupport & MIDICAPS_STREAM) {
+				printf(" - provides direct support for the midiStreamOut function.\n");
+			}
+			printf("\n");
+		}
 	}
 
 	musbuf = load_file(filename, &musbuflen);
-	if(musbuf == NULL)
-	{
+	if (musbuf == NULL) {
 		fprintf(stderr, "Failed to load file %s\n", filename);
 		return 0;
 	}
 
 	mus_init();
 
-	score = mus_score_open(musbuf, musbuflen);
-	if(score == NULL)
-	{
+	printf("Loaded %s\n", filename);
+
+	printf("\n(p) play/pause, (s) stop, (l) loop on/off, (q) quit, (+/-) volume up/down\n");
+
+	score = mus_score_open(musbuf, musbuflen, mus_callback);
+	if (score == NULL) {
 		fprintf(stderr, "Failed to open file %s\n", filename);
 		goto error;
 	}
 
-	printf("Loaded %s\n", filename);
-
-	printf("\n(p) play/pause, (s) stop, (l) loop on/off, (q) quit, (+/-) volume up/down\n");
-	printf("\r       \rStopped");
 	err = 0;
-//	while((c = getc(stdin)) != 'q') // getch doesn't work well in eclipse debugger
-	while((c = getch()) != 'q')
-	{
-		switch(c)
-		{
+	//	while((c = getc(stdin)) != 'q') // getch doesn't work well in eclipse debugger
+	while ((c = _getch()) != 'q') {
+		switch (c) {
 		case 'l':
 		case 'L':
-//			m->looping = !m->looping;
+			//			m->looping = !m->looping;
 			break;
 		case 'p':
 		case 'P':
-			if(mus_is_stopped(score))
-			{
+			if (mus_is_stopped(score)) {
 				err = mus_play(score);
-				if(err != MMSYSERR_NOERROR)
-				{
+				if (err != MMSYSERR_NOERROR) {
 					fprintf(stderr, "Error playing file %s, error %d\n", filename, err);
 					goto error;
 				}
 				printf("\r       \rPlaying");
-			}
-			else if(mus_is_playing(score))
-			{
+			} else if (mus_is_playing(score)) {
 				err = mus_pause(score);
-				if(err != MMSYSERR_NOERROR)
-				{
+				if (err != MMSYSERR_NOERROR) {
 					fprintf(stderr, "Error pausing file %s, error %d\n", filename, err);
 					goto error;
 				}
 				printf("\r       \rPaused");
-			}
-			else if(mus_is_paused(score))
-			{
+			} else if (mus_is_paused(score)) {
 				err = mus_resume(score);
-				if(err != MMSYSERR_NOERROR)
-				{
+				if (err != MMSYSERR_NOERROR) {
 					fprintf(stderr, "Error pausing file %s, error %d\n", filename, err);
 					goto error;
 				}
@@ -1368,8 +1312,7 @@ int main(int argc, char* argv[])
 		case 's':
 		case 'S':
 			err = mus_stop(score);
-			if(err != MMSYSERR_NOERROR)
-			{
+			if (err != MMSYSERR_NOERROR) {
 				fprintf(stderr, "Error stopping file %s, error %d\n", filename, err);
 				goto error;
 			}
@@ -1378,8 +1321,7 @@ int main(int argc, char* argv[])
 		case '-':
 		case '_':
 			err = mus_volume(score, VOL_DOWN);
-			if(err != MMSYSERR_NOERROR)
-			{
+			if (err != MMSYSERR_NOERROR) {
 				fprintf(stderr, "Error adjusting volume, error %d\n", err);
 				goto error;
 			}
@@ -1387,8 +1329,7 @@ int main(int argc, char* argv[])
 		case '=':
 		case '+':
 			err = mus_volume(score, VOL_UP);
-			if(err != MMSYSERR_NOERROR)
-			{
+			if (err != MMSYSERR_NOERROR) {
 				fprintf(stderr, "Error adjusting volume, error %d\n", err);
 				goto error;
 			}
@@ -1408,12 +1349,11 @@ error:
 	return EXIT_SUCCESS;
 }
 
-unsigned char* load_file(unsigned char* filename, unsigned int* len)
-{
+unsigned char* load_file(unsigned char* filename, unsigned int* len) {
 	unsigned char* buf;
 	unsigned int ret;
 	FILE* f = fopen((char*)filename, "rb");
-	if(f == NULL)
+	if (f == NULL)
 		return 0;
 
 	fseek(f, 0, SEEK_END);
@@ -1422,8 +1362,7 @@ unsigned char* load_file(unsigned char* filename, unsigned int* len)
 
 	buf = (unsigned char*)malloc(*len);
 
-	if(buf == 0)
-	{
+	if (buf == 0) {
 		fclose(f);
 		return 0;
 	}
@@ -1431,8 +1370,7 @@ unsigned char* load_file(unsigned char* filename, unsigned int* len)
 	ret = fread(buf, 1, *len, f);
 	fclose(f);
 
-	if(ret != *len)
-	{
+	if (ret != *len) {
 		free(buf);
 		return 0;
 	}
@@ -1448,20 +1386,17 @@ unsigned char* load_file(unsigned char* filename, unsigned int* len)
 #define LONG_MORE_BIT 0x80
 #endif
 
-unsigned long read_var_long(unsigned char* buf, unsigned int* inc)
-{
+static unsigned long read_var_long(unsigned char* buf, unsigned int* inc) {
 	unsigned long time = 0;
 	unsigned char c;
 
 	*inc = 0;
 
 
-	do
-	{
+	do {
 		c = buf[(*inc)++];
 		time = (time * 128) + (c & LONG_MASK);
-	}
-	while(c & LONG_MORE_BIT);
+	} while (c & LONG_MORE_BIT);
 
 	return time;
 }
