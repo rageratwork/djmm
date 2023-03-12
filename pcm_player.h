@@ -34,8 +34,7 @@
 #ifndef PCM_PLAYER_H_
 #define PCM_PLAYER_H_
 
-#include <windows.h>
-#include <mmsystem.h>
+#include "dj_types.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,29 +42,29 @@ extern "C" {
 
 typedef void (*pcm_notify_cb)(unsigned int val);
 
-unsigned int pcm_init();
+DJ_RESULT pcm_init();
 void pcm_shutdown();
 
-HANDLE pcm_sample_open(unsigned int sample_rate, unsigned int sample_size, unsigned int channels, unsigned char* buf, unsigned int len);
-void pcm_sample_close(HANDLE h);
+DJ_HANDLE pcm_sample_open(unsigned int sample_rate, unsigned int sample_size, unsigned int channels, unsigned char* buf, unsigned int len, pcm_notify_cb callback);
+void pcm_sample_close(DJ_HANDLE h);
 
-MMRESULT pcm_play(HANDLE h);
-MMRESULT pcm_stop(HANDLE h);
+DJ_RESULT pcm_play(DJ_HANDLE h);
+DJ_RESULT pcm_stop(DJ_HANDLE h);
 
-MMRESULT pcm_pause(HANDLE h);
-MMRESULT pcm_resume(HANDLE h);
+DJ_RESULT pcm_pause(DJ_HANDLE h);
+DJ_RESULT pcm_resume(DJ_HANDLE h);
 
-MMRESULT pcm_set_volume_left(HANDLE h, unsigned int level);
-MMRESULT pcm_set_volume_right(HANDLE h, unsigned int level);
-MMRESULT pcm_set_volume(HANDLE h, unsigned int level);
+DJ_RESULT pcm_set_volume_left(DJ_HANDLE h, unsigned int level);
+DJ_RESULT pcm_set_volume_right(DJ_HANDLE h, unsigned int level);
+DJ_RESULT pcm_set_volume(DJ_HANDLE h, unsigned int level);
 
-MMRESULT pcm_volume_left(HANDLE h, unsigned int dir);
-MMRESULT pcm_volume_right(HANDLE h, unsigned int dir);
-MMRESULT pcm_volume(HANDLE h, unsigned int dir);
+DJ_RESULT pcm_volume_left(DJ_HANDLE h, unsigned int dir);
+DJ_RESULT pcm_volume_right(DJ_HANDLE h, unsigned int dir);
+DJ_RESULT pcm_volume(DJ_HANDLE h, unsigned int dir);
 
-BOOL pcm_is_playing(HANDLE h);
-BOOL pcm_is_paused(HANDLE h);
-BOOL pcm_is_stopped(HANDLE h);
+boolean pcm_is_playing(DJ_HANDLE h);
+boolean pcm_is_paused(DJ_HANDLE h);
+boolean pcm_is_stopped(DJ_HANDLE h);
 
 #ifdef __cplusplus
 }
