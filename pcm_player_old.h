@@ -24,62 +24,50 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  * IN THE SOFTWARE.
  *
- * dx_input.h
+ * pcm_player.h
  *
- *  Created on: Jan 1, 2012
+ *  Created on: Dec 8, 2011
  *      Author: David J. Rager
+ *       Email: djrager@fourthwoods.com
  */
 
-#ifndef DX_INPUT_H_
-#define DX_INPUT_H_
+#ifndef PCM_PLAYER_H_
+#define PCM_PLAYER_H_
 
-#define WIN32_LEAN_AND_MEAN
-
-#include <windows.h>
+#include "dj_types.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define KEY_DOWN(key) (((key) & 0x80) ? 1 : 0)
-#define KEY_UP(key)   (((key) & 0x80) ? 0 : 1)
+typedef void (*pcm_notify_cb)(unsigned int val);
 
-#define MOUSE_DOWN(btn) (((btn) & 0x80) ? 1 : 0)
-#define MOUSE_UP(btn)   (((btn) & 0x80) ? 0 : 1)
+DJ_RESULT pcm_init();
+void pcm_shutdown();
 
-#define JOYBTN_DOWN(key) (((key) & 0x80) ? 1 : 0)
-#define JOYBTN_UP(key)   (((key) & 0x80) ? 0 : 1)
+DJ_HANDLE pcm_sound_open(unsigned int sample_rate, unsigned int sample_size, unsigned int channels, unsigned char* buf, unsigned int len, pcm_notify_cb callback);
+void pcm_sound_close(DJ_HANDLE h);
 
-struct mouse_state {
-	int x;
-	int y;
-	unsigned int b1;
-	unsigned int b2;
-	unsigned int b3;
-	unsigned int b4;
-};
+DJ_RESULT pcm_play(DJ_HANDLE h);
+DJ_RESULT pcm_stop(DJ_HANDLE h);
 
-struct joystick_state {
-	int x;
-	int y;
-	int dpad;
-	unsigned int b1;
-	unsigned int b2;
-	unsigned int b3;
-	unsigned int b4;
-};
+DJ_RESULT pcm_pause(DJ_HANDLE h);
+DJ_RESULT pcm_resume(DJ_HANDLE h);
 
-unsigned int dxi_init(HINSTANCE hinstance, HWND hwnd);
+DJ_RESULT pcm_set_volume_left(DJ_HANDLE h, unsigned int level);
+DJ_RESULT pcm_set_volume_right(DJ_HANDLE h, unsigned int level);
+DJ_RESULT pcm_set_volume(DJ_HANDLE h, unsigned int level);
 
-unsigned int dxi_get_keyboard_state(unsigned char* keystate, unsigned int len);
+DJ_RESULT pcm_volume_left(DJ_HANDLE h, unsigned int dir);
+DJ_RESULT pcm_volume_right(DJ_HANDLE h, unsigned int dir);
+DJ_RESULT pcm_volume(DJ_HANDLE h, unsigned int dir);
 
-unsigned int dxi_get_mouse_state(struct mouse_state* mouse);
-unsigned int dxi_get_joystick_state(struct joystick_state* joystick);
-
-unsigned int dxi_shutdown();
+boolean pcm_is_playing(DJ_HANDLE h);
+boolean pcm_is_paused(DJ_HANDLE h);
+boolean pcm_is_stopped(DJ_HANDLE h);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* DX_INPUT_H_ */
+#endif /* PCM_PLAYER_H_ */

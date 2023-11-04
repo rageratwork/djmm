@@ -33,8 +33,8 @@
 #include <stdio.h>
 #include <conio.h>
 #include <windows.h>
-#include <mmsystem.h>
 
+#include "SDL3/sdl.h"
 #include "pcm_player.h"
 
 #define STATE_ERROR		0
@@ -44,6 +44,7 @@
 #define STATE_STOPPING	4
 #define STATE_STOPPED	5
 #define STATE_SHUTDOWN	6
+#define STATE_INITIALIZING 7
 
 #define VOL_UP 0
 #define VOL_DOWN 1
@@ -55,18 +56,14 @@
 
 #else
 
+#include "SDL3/sdl.h"
+
 unsigned char* load_file(unsigned char* filename, unsigned int* len);
 
 #endif
 
 struct pcm_player {
-  HANDLE event;
-  HANDLE thread;
-  HANDLE ready;
   HANDLE mutex;
-
-  HWAVEOUT stream;
-  WAVEHDR header[2]; // double buffer
 
   unsigned int device;
 
@@ -84,7 +81,9 @@ struct pcm_player {
 struct pcm_sample {
   unsigned int sample_rate;
   unsigned int sample_size;
+  unsigned int sample_count;
   unsigned int channels;
+  unsigned int silence;
 
   unsigned char* ptr;
 
@@ -92,158 +91,72 @@ struct pcm_sample {
   unsigned int raw_len;
 };
 
-#define MAX_BUFFER_SIZE	1024
+#pragma pack(push,1)
+struct dmx_header {
+  unsigned short format;
+  unsigned short sample_rate;
+  unsigned int length; // # of samples + 32 bytes of padding
+  unsigned char padding[16];
+  unsigned char samples[]; // size is length - 32 bytes
+  // ends with another padding[16];
+};
+#pragma pack(pop)
 
-static unsigned int _pcm_get_streambuf(struct pcm_sample* s, unsigned char* out, unsigned int* outlen);
-static unsigned int _pcm_adjust_volume(unsigned char* out, unsigned int len, unsigned int sample_size, unsigned int channels, unsigned int lvol, unsigned int rvol);
+#define MAX_BUFFER_SIZE	1024 / 2
 
-static struct pcm_player* _pcm_player_add(struct pcm_player* p);
-static void _pcm_player_shutdown(struct pcm_player* p);
+static void _pcm_audio_callback(void* userdata, Uint8* stream, int len);
+
+static struct pcm_player* _pcm_player_load(pcm_notify_cb callback);
+static void _pcm_player_unload(struct pcm_player* p);
+
+static struct pcm_player* _pcm_player_list_add(struct pcm_player* p);
+static struct pcm_player* _pcm_player_list_remove(DJ_HANDLE h);
+
 static void _pcm_player_free(struct pcm_player* p);
 
+static struct pcm_sample* _pcm_sample_create(unsigned char* buf, unsigned int len);
 static void _pcm_sample_free(struct pcm_sample* s);
 
-static void _pcm_close_stream(struct pcm_player* p);
-static DJ_RESULT pcm_rewind(DJ_HANDLE h);
+static struct pcm_player* _pcm_stream_open(struct pcm_player* p);
+static void _pcm_stream_close(struct pcm_player* p);
 
-static void CALLBACK pcm_callback_proc(HWAVEOUT hmo, UINT wMsg, DWORD_PTR dwInstance, DWORD_PTR dwParam1, DWORD_PTR dwParam2) {
-  struct pcm_player* p = (struct pcm_player*)dwInstance;
-  if (p == NULL)
-    return;
+static void _pcm_player_pool_add(struct pcm_player* p);
+static struct pcm_player* _pcm_player_pool_remove();
 
-  switch (wMsg) {
-  case WOM_DONE:
-    SetEvent(p->event);
-    break;
-  case WOM_OPEN:
-    break;
-  case WOM_CLOSE:
-    break;
-  }
+static boolean _pcm_is_handle_valid(DJ_HANDLE h);
 
-}
+static DJ_RESULT _pcm_lock(DJ_HANDLE h);
+static DJ_RESULT _pcm_unlock(DJ_HANDLE h);
+static DJ_RESULT _pcm_rewind(DJ_HANDLE h);
 
-static DWORD WINAPI _pcm_player_proc(LPVOID lpParameter) {
-  struct pcm_player* p = (struct pcm_player*)lpParameter;
-  unsigned int err = MMSYSERR_NOERROR;
-
-  unsigned int idx = 0;
-
-  while ((p->state != STATE_SHUTDOWN) && (p->state != STATE_ERROR)) {
-    WaitForSingleObject(p->event, INFINITE);
-
-    switch (p->state) {
-    case STATE_STARTING:
-      WaitForSingleObject(p->mutex, INFINITE);
-      _pcm_get_streambuf(p->sample, (unsigned char*)p->header[0].lpData, (unsigned int*)&p->header[0].dwBufferLength);
-      _pcm_adjust_volume((unsigned char*)p->header[0].lpData, p->header[0].dwBufferLength, p->sample->sample_size, p->sample->channels, p->lvolume, p->rvolume);
-      p->header[0].dwBytesRecorded = p->header[0].dwBufferLength;
-      p->header[0].dwFlags &= ~WHDR_DONE; // clear the done flag to reuse the buffer
-
-      _pcm_get_streambuf(p->sample, (unsigned char*)p->header[1].lpData, (unsigned int*)&p->header[1].dwBufferLength);
-      _pcm_adjust_volume((unsigned char*)p->header[1].lpData, p->header[1].dwBufferLength, p->sample->sample_size, p->sample->channels, p->lvolume, p->rvolume);
-      p->header[1].dwBytesRecorded = p->header[1].dwBufferLength;
-      p->header[1].dwFlags &= ~WHDR_DONE; // clear the done flag to reuse the buffer
-
-      if (p->header[0].dwBufferLength > 0) {
-        err = waveOutWrite(p->stream, &p->header[0], sizeof(WAVEHDR));
-      }
-
-      if (p->header[1].dwBufferLength > 0) {
-        err = waveOutWrite(p->stream, &p->header[1], sizeof(WAVEHDR));
-      }
-
-      p->state = STATE_PLAYING;
-      ReleaseMutex(p->mutex);
-
-      break;
-    case STATE_PLAYING:
-      WaitForSingleObject(p->mutex, INFINITE);
-
-      _pcm_get_streambuf(p->sample, (unsigned char*)p->header[idx].lpData, (unsigned int*)&p->header[idx].dwBufferLength);
-      _pcm_adjust_volume((unsigned char*)p->header[idx].lpData, p->header[idx].dwBufferLength, p->sample->sample_size, p->sample->channels, p->lvolume, p->rvolume);
-      p->header[idx].dwBytesRecorded = p->header[idx].dwBufferLength;
-      if (p->header[idx].dwBufferLength > 0) {
-        p->header[idx].dwFlags &= ~WHDR_DONE; // clear the done flag to reuse the buffer
-        err = waveOutWrite(p->stream, &p->header[idx], sizeof(WAVEHDR));
-        idx = (idx + 1) % 2;
-      } else {
-        if (p->looping) {
-          pcm_rewind(p);
-          _pcm_get_streambuf(p->sample, (unsigned char*)p->header[idx].lpData, (unsigned int*)&p->header[idx].dwBufferLength);
-          _pcm_adjust_volume((unsigned char*)p->header[idx].lpData, p->header[idx].dwBufferLength, p->sample->sample_size, p->sample->channels, p->lvolume, p->rvolume);
-          p->header[idx].dwBytesRecorded = p->header[idx].dwBufferLength;
-          p->header[idx].dwFlags &= ~WHDR_DONE;
-          waveOutWrite(p->stream, &p->header[idx], sizeof(WAVEHDR));
-          idx = (idx + 1) % 2;
-        } else {
-          // one more buffer left playing, wait for it to finish
-          p->state = STATE_STOPPING;
-        }
-      }
-
-      ReleaseMutex(p->mutex);
-      break;
-    case STATE_STOPPING:
-      WaitForSingleObject(p->mutex, INFINITE);
-
-      pcm_rewind(p);
-
-      SetEvent(p->event);
-
-      p->state = STATE_STOPPED;
-      ReleaseMutex(p->mutex);
-
-      break;
-    case STATE_STOPPED:
-      idx = 0;
-      WaitForSingleObject(p->mutex, INFINITE);
-
-      if (p->cb)
-        p->cb(p->state);
-
-      SetEvent(p->ready);
-      ReleaseMutex(p->mutex);
-
-      break;
-    }
-  }
-
-  return 0;
-}
+static unsigned int _pcm_adjust_volume(unsigned char* out, unsigned int len, struct pcm_player* p);
 
 static DJ_HANDLE players_mutex = NULL;
 static struct pcm_player* players = NULL;
+
+static DJ_HANDLE pool_mutex = NULL;
 static struct pcm_player* pool = NULL;
 
-/*!
- * Initialize the PCM subsystem.
- *
- * This function initializes the global player handle list and associated
- * mutex.
- *
- * This function does not acquire a lock.
- *
- * @return Returns MMSYSERR_NOERROR if successful, MMSYSERR_ERROR if the mutex
- *  could not be initialized.
- */
 DJ_RESULT pcm_init() {
   players = NULL;
   pool = NULL;
 
   players_mutex = CreateMutex(NULL, FALSE, NULL);
   if (players_mutex == NULL)
-    return MMSYSERR_ERROR;
+    return ERROR;
 
-  return MMSYSERR_NOERROR;
+  pool_mutex = CreateMutex(NULL, FALSE, NULL);
+  if (pool_mutex == NULL)
+    return ERROR;
+
+  return NOERROR;
 }
 
 void pcm_shutdown() {
   // repeatedly close the first player in the list until the list is empty.
   struct pcm_player* tmp = players;
   while (tmp != NULL) {
-    pcm_sample_close(tmp);
-
+    pcm_sound_close(tmp);
     tmp = players;
   }
 
@@ -257,104 +170,359 @@ void pcm_shutdown() {
 
   // At this point all handles are closed and the global list empty.
   CloseHandle(players_mutex);
+  CloseHandle(pool_mutex);
 }
 
-static struct pcm_player* _pcm_player_init(pcm_notify_cb callback) {
+
+DJ_HANDLE pcm_sound_open(unsigned char* buf, unsigned int len, pcm_notify_cb callback) {
   struct pcm_player* p = NULL;
-  WaitForSingleObject(players_mutex, INFINITE);
+
+  p = _pcm_player_load(callback);
+  if (p == NULL) {
+    goto error1;
+  }
+
+  p->sample = _pcm_sample_create(buf, len);
+  if (p->sample == NULL) {
+    goto error2;
+  }
+
+  if (_pcm_stream_open(p) != NULL) {
+    // Score is loaded and ready. Add the player to our global list
+    // and return the "HANDLE" to the user.
+    return _pcm_player_list_add(p);
+  }
+
+  _pcm_sample_free(p->sample);
+  p->sample = NULL;
+
+error2:
+  _pcm_player_unload(p);
+  p = NULL;
+
+error1:
+  return NULL;
+}
+
+void pcm_sound_close(DJ_HANDLE h) {
+  struct pcm_player* p = _pcm_player_list_remove(h);
+  if (p == NULL) {
+    return;
+  }
+
+  // If it's still playing, stop it.
+  if (p->state != STATE_STOPPED) {
+    pcm_stop(p);
+  }
+
+  _pcm_stream_close(p);
+  _pcm_player_unload(p);
+
+  return;
+}
+
+DJ_RESULT pcm_play(DJ_HANDLE h) {
+  struct pcm_player* p = (struct pcm_player*)h;
+  unsigned int err = NOERROR;
+
+  if (!_pcm_is_handle_valid(h)) {
+    return INVALID_PARAM;
+  }
+
+  _pcm_lock(p);
+  if ((p->state == STATE_PLAYING) || (p->state == STATE_PAUSED) || (p->state == STATE_STOPPED)) {
+    _pcm_rewind(p);
+    p->state = STATE_PLAYING;
+    if (SDL_PlayAudioDevice(p->device) < 0) {
+      printf("pcm_play(): SDL_PlayAudioDevice %s\n", SDL_GetError());
+    }
+  }
+  _pcm_unlock(p);
+
+  return err;
+}
+
+DJ_RESULT pcm_pause(DJ_HANDLE h) {
+  struct pcm_player* p = (struct pcm_player*)h;
+  unsigned int err = NOERROR;
+
+  if(!_pcm_is_handle_valid(h)) {
+    return INVALID_PARAM;
+  }
+
+  _pcm_lock(p);
+  if (p->state == STATE_PLAYING) {
+    p->state = STATE_PAUSED;
+    if (SDL_PauseAudioDevice(p->device) < 0) {
+      printf("pcm_pause(): SDL_PauseAudioDevice %s\n", SDL_GetError());
+    }
+  }
+  _pcm_unlock(p);
+
+  return err;
+}
+
+DJ_RESULT pcm_resume(DJ_HANDLE h) {
+  struct pcm_player* p = (struct pcm_player*)h;
+  unsigned int err = NOERROR;
+
+  if (!_pcm_is_handle_valid(h)) {
+    return INVALID_PARAM;
+  }
+
+  _pcm_lock(p);
+  if (p->state == STATE_PAUSED) {
+    p->state = STATE_PLAYING;
+    if (SDL_PlayAudioDevice(p->device) < 0) {
+      printf("pcm_resume(): SDL_PlayAudioDevice %s\n", SDL_GetError());
+    }
+  }
+  _pcm_unlock(p);
+
+  return err;
+}
+
+DJ_RESULT pcm_stop(DJ_HANDLE h) {
+  struct pcm_player* p = (struct pcm_player*)h;
+
+  if (!_pcm_is_handle_valid(h)) {
+    return INVALID_PARAM;
+  }
+
+  _pcm_lock(p);
+  p->state = STATE_STOPPED;
+  if (SDL_PauseAudioDevice(p->device) < 0) {
+    printf("pcm_stop(): SDL_PauseAudioDevice %s\n", SDL_GetError());
+  }
+  _pcm_rewind(p);
+  _pcm_unlock(p);
+
+  return NOERROR;
+}
+
+DJ_RESULT pcm_set_looping(DJ_HANDLE h, boolean looping) {
+  struct pcm_player* p = (struct pcm_player*)h;
+
+  if (!_pcm_is_handle_valid(h)) {
+    return INVALID_PARAM;
+  }
+
+  _pcm_lock(p);
+  p->looping = looping;
+  _pcm_unlock(p);
+
+  return NOERROR;
+}
+
+DJ_RESULT pcm_set_volume_left(DJ_HANDLE h, unsigned int level) {
+  struct pcm_player* p = (struct pcm_player*)h;
+
+  if (!_pcm_is_handle_valid(h)) {
+    return INVALID_PARAM;
+  }
+  _pcm_lock(p);
+  p->lvolume = level;
+  _pcm_unlock(p);
+
+  return NOERROR;
+}
+
+unsigned int pcm_get_volume_left(DJ_HANDLE h) {
+  struct pcm_player* p = (struct pcm_player*)h;
+
+  if (!_pcm_is_handle_valid(h)) {
+    return 0;
+  }
+
+  return p->lvolume;
+}
+
+DJ_RESULT pcm_set_volume_right(DJ_HANDLE h, unsigned int level) {
+  struct pcm_player* p = (struct pcm_player*)h;
+
+  if (!_pcm_is_handle_valid(h)) {
+    return INVALID_PARAM;
+  }
+
+  _pcm_lock(p);
+  p->rvolume = level;
+  _pcm_unlock(p);
+
+  return NOERROR;
+}
+
+unsigned int pcm_get_volume_right(DJ_HANDLE h) {
+  struct pcm_player* p = (struct pcm_player*)h;
+
+  if (!_pcm_is_handle_valid(h)) {
+    return 0;
+  }
+
+  return p->rvolume;
+}
+
+DJ_RESULT pcm_set_volume(DJ_HANDLE h, unsigned int level) {
+  unsigned int err = NOERROR;
+
+  err = pcm_set_volume_left(h, level);
+  if (err == NOERROR) {
+    err = pcm_set_volume_right(h, level);
+  }
+
+  return err;
+}
+
+boolean pcm_is_looping(DJ_HANDLE h) {
+  struct pcm_player* p = (struct pcm_player*)h;
+  if (!_pcm_is_handle_valid(h)) {
+    return false;
+  }
+
+  return p->looping;
+}
+
+boolean pcm_is_playing(DJ_HANDLE h) {
+  struct pcm_player* p = (struct pcm_player*)h;
+  if (!_pcm_is_handle_valid(h)) {
+    return false;
+  }
+
+  return (p->state == STATE_PLAYING);
+}
+
+boolean pcm_is_paused(DJ_HANDLE h) {
+  struct pcm_player* p = (struct pcm_player*)h;
+  if (!_pcm_is_handle_valid(h)) {
+    return false;
+  }
+
+  return (p->state == STATE_PAUSED);
+}
+
+boolean pcm_is_stopped(DJ_HANDLE h) {
+  struct pcm_player* p = (struct pcm_player*)h;
+  if (!_pcm_is_handle_valid(h)) {
+    return false;
+  }
+
+  return (p->state == STATE_STOPPED);
+}
+
+static void _pcm_audio_callback(void* userdata, Uint8* stream, int len) {
+  struct pcm_player* p = (struct pcm_player*)userdata;
+  struct pcm_sample* s = p->sample;
+
+  unsigned int bytesread = s->ptr - s->raw_bytes;
+  unsigned int bytesleft = s->raw_len - bytesread;
+
+  if (bytesleft == 0) {
+    _pcm_rewind(p);
+
+    if(p->looping) {
+      bytesread = s->ptr - s->raw_bytes;
+      bytesleft = s->raw_len - bytesread;
+    } else {
+      memset(stream, p->sample->silence, len);
+      p->state = STATE_STOPPED;
+      SDL_PauseAudioDevice(p->device);
+      if (p->cb) {
+        p->cb(p);
+      }
+
+      return;
+    }
+  }
+
+  if (bytesleft >= (unsigned int)len) {
+    bytesread = len;
+  } else {
+    bytesread = bytesleft;
+    memset(stream + bytesread, p->sample->silence, len - bytesread);
+  }
+
+  memcpy(stream, s->ptr, bytesread);
+  _pcm_adjust_volume(stream, bytesread, p);
+
+  s->ptr += bytesread;
+
+}
+
+static DJ_RESULT _pcm_lock(DJ_HANDLE h) {
+  struct pcm_player* p = (struct pcm_player*)h;
+
+  WaitForSingleObject(p->mutex, INFINITE);
+
+  return NOERROR;
+}
+
+static DJ_RESULT _pcm_unlock(DJ_HANDLE h) {
+  struct pcm_player* p = (struct pcm_player*)h;
+
+  if(ReleaseMutex(p->mutex)) {
+    return NOERROR;
+  }
+  return ERROR;
+}
+
+static DJ_RESULT _pcm_rewind(DJ_HANDLE h) {
+  struct pcm_player* p = (struct pcm_player*)h;
+
+  if (p->sample != NULL)
+    p->sample->ptr = p->sample->raw_bytes;
+
+  return NOERROR;
+}
+
+static struct pcm_player* _pcm_player_pool_remove() {
+  struct pcm_player* p = NULL;
+  WaitForSingleObject(pool_mutex, INFINITE);
   if (pool != NULL) { // if a player is available in the pool, grab that
     p = pool;
     pool = pool->next;
+    ReleaseMutex(pool_mutex);
 
     p->state = STATE_STOPPED;
     p->looping = 0;
     p->lvolume = 65536;
     p->rvolume = 65536;
-    p->stream = 0;
-    p->thread = 0;
     p->sample = NULL;
-    p->cb = callback;
     p->next = NULL;
+    p->cb = NULL;
+  }
 
-    ReleaseMutex(players_mutex);
-  } else { // otherwise, create a new one
-    ReleaseMutex(players_mutex);
+  ReleaseMutex(pool_mutex);
+  return p;
+}
+
+static struct pcm_player* _pcm_player_load(pcm_notify_cb callback) {
+  struct pcm_player* p = NULL;
+  
+  p = _pcm_player_pool_remove();
+  if(p == NULL) { // otherwise, create a new one
 
     p = (struct pcm_player*)malloc(sizeof(struct pcm_player));
     if (p != NULL) {
-      // Initialize the double buffers.
-      ZeroMemory(&p->header[0], sizeof(WAVEHDR));
-      p->header[0].lpData = (char*)malloc(MAX_BUFFER_SIZE);
-      if (p->header[0].lpData == NULL)
-        goto error1;
-      p->header[0].dwBufferLength = p->header[0].dwBytesRecorded = MAX_BUFFER_SIZE;
-
-      ZeroMemory(&p->header[1], sizeof(WAVEHDR));
-      p->header[1].lpData = (char*)malloc(MAX_BUFFER_SIZE);
-      if (p->header[1].lpData == NULL)
-        goto error2;
-      p->header[1].dwBufferLength = p->header[1].dwBytesRecorded = MAX_BUFFER_SIZE;
-
       p->state = STATE_STOPPED;
       p->looping = 0;
       p->lvolume = 65536;
       p->rvolume = 65536;
-      p->stream = 0;
-      p->thread = 0;
       p->sample = NULL;
-      p->cb = callback;
       p->next = NULL;
+      p->cb = NULL;
 
       p->mutex = CreateMutex(NULL, FALSE, NULL);
       if (p->mutex == NULL) {
         fprintf(stderr, "CreateMutex failed %lu\n", GetLastError());
-        goto error3;
+        goto error1;
       }
-
-      p->event = CreateEvent(0, FALSE, TRUE, 0); // initially set to signalled so we get the ready event below
-      if (p->event == NULL) {
-        fprintf(stderr, "CreateEvent failed %lu\n", GetLastError());
-        goto error4;
-      }
-
-      // Create the event that signals when the player is stopped and ready.
-      // This event is used in this function when the thread is first
-      // initialized. It is also used in mus_stop() to signal when the thread
-      // has settled into its STATE_STOPPED state.
-      p->ready = CreateEvent(0, FALSE, FALSE, 0);
-      if (p->ready == NULL) {
-        fprintf(stderr, "CreateEvent failed %lu\n", GetLastError());
-        goto error5;
-      }
-
-      // Finally, spawn the worker thread.
-      p->thread = CreateThread(NULL, 0, _pcm_player_proc, p, 0, NULL);
-      if (p->thread == NULL) {
-        fprintf(stderr, "CreateThread failed %lu\n", GetLastError());
-        goto error6;
-      }
-
-      // Make sure the thread is spun up and ready.
-      WaitForSingleObject(p->ready, INFINITE);
     }
+  }
+  
+  if (p != NULL) {
+    p->cb = callback;
   }
 
   return p;
-
-error6:
-  CloseHandle(p->ready);
-
-error5:
-  CloseHandle(p->event);
-
-error4:
-  CloseHandle(p->mutex);
-
-error3:
-  free(p->header[1].lpData);
-
-error2:
-  free(p->header[0].lpData);
 
 error1:
   free(p);
@@ -362,48 +530,49 @@ error1:
 }
 
 static void _pcm_player_free(struct pcm_player* p) {
-  if (p == NULL)
+  if (p == NULL) {
     return;
+  }
 
-  p->state = STATE_SHUTDOWN;
-  SetEvent(p->event);
-  WaitForSingleObject(p->thread, INFINITE);
-
-  CloseHandle(p->event);
-  CloseHandle(p->ready);
   CloseHandle(p->mutex);
-  CloseHandle(p->thread);
-  free(p->header[0].lpData);
-  free(p->header[1].lpData);
   free(p);
 }
 
-static void _pcm_player_shutdown(struct pcm_player* p) {
-  WaitForSingleObject(players_mutex, INFINITE);
+static void _pcm_player_unload(struct pcm_player* p) {
   if (p->sample) {
     _pcm_sample_free(p->sample);
     p->sample = NULL;
   }
 
-  p->next = pool;
-  pool = p;
-  ReleaseMutex(players_mutex);
+  _pcm_player_pool_add(p);
 }
 
-static struct pcm_sample* _pcm_sample_create(unsigned int sample_rate, unsigned int sample_size, unsigned int channels, unsigned char* buf, unsigned int len) {
+static void _pcm_player_pool_add(struct pcm_player* p) {
+  WaitForSingleObject(pool_mutex, INFINITE);
+  p->next = pool;
+  pool = p;
+  ReleaseMutex(pool_mutex);
+}
+
+static struct pcm_sample* _pcm_sample_create(unsigned char* buf, unsigned int len) {
   struct pcm_sample* s = (struct pcm_sample*)malloc(sizeof(struct pcm_sample));
   if (s == NULL)
     goto error1;
 
-  s->sample_rate = sample_rate;
-  s->sample_size = sample_size;
-  s->channels = channels;
-  s->raw_bytes = s->ptr = (unsigned char*)malloc(len);
+  struct dmx_header* dmx = (struct dmx_header*)buf;
+
+  unsigned short formatNumber = dmx->format; // always 3
+
+  s->sample_rate = dmx->sample_rate;
+  s->sample_count = dmx->length - 32; // length includes 16 bytes buffer on each end of samples
+  s->sample_size = 8;
+  s->channels = 1;
+  s->raw_bytes = s->ptr = (unsigned char*)malloc(s->sample_count);
   if (s->raw_bytes == NULL)
     goto error2;
 
-  memcpy(s->raw_bytes, buf, len);
-  s->raw_len = len;
+  memcpy(s->raw_bytes, &dmx->samples, s->sample_count);
+  s->raw_len = s->sample_count;
 
   return s;
 
@@ -419,55 +588,6 @@ static void _pcm_sample_free(struct pcm_sample* s) {
     free(s->raw_bytes);
     free(s);
   }
-}
-
-DJ_HANDLE pcm_sample_open(unsigned int sample_rate, unsigned int sample_size, unsigned int channels, unsigned char* buf, unsigned int len, pcm_notify_cb callback) {
-  WAVEFORMATEX wfx;
-  unsigned int err = MMSYSERR_NOERROR;
-  struct pcm_player* p = NULL;
-
-  p = _pcm_player_init(callback);
-  if (p == NULL)
-    goto error1;
-
-  p->sample = _pcm_sample_create(sample_rate, sample_size, channels, buf, len);
-  if (p->sample == NULL) {
-    goto error2;
-  }
-
-  wfx.nSamplesPerSec = p->sample->sample_rate;
-  wfx.wBitsPerSample = p->sample->sample_size;
-  wfx.nChannels = p->sample->channels;
-  wfx.cbSize = 0;
-  wfx.wFormatTag = WAVE_FORMAT_PCM;
-  wfx.nBlockAlign = (wfx.wBitsPerSample >> 3) * wfx.nChannels;
-  wfx.nAvgBytesPerSec = wfx.nBlockAlign * wfx.nSamplesPerSec;
-
-  err = waveOutOpen(&p->stream, WAVE_MAPPER, &wfx, (DWORD_PTR)pcm_callback_proc, (DWORD_PTR)p, CALLBACK_FUNCTION);
-  if (err != MMSYSERR_NOERROR)
-    goto error2;
-
-  err = waveOutPrepareHeader(p->stream, &p->header[0], sizeof(WAVEHDR));
-  if (err != MMSYSERR_NOERROR)
-    goto error3;
-
-  err = waveOutPrepareHeader(p->stream, &p->header[1], sizeof(WAVEHDR));
-  if (err != MMSYSERR_NOERROR)
-    goto error3;
-
-  // Score is loaded and ready. Add the player to our global list
-  // and return the "HANDLE" to the user.
-  return _pcm_player_add(p);
-
-error3:
-  waveOutClose(p->stream);
-
-error2:
-  _pcm_player_shutdown(p);
-  p = NULL;
-
-error1:
-  return NULL;
 }
 
 static boolean _pcm_is_handle_valid(DJ_HANDLE h) {
@@ -490,21 +610,22 @@ static boolean _pcm_is_handle_valid(DJ_HANDLE h) {
   return res;
 }
 
-static struct pcm_player* _pcm_player_add(struct pcm_player* p) {
+static struct pcm_player* _pcm_player_list_add(struct pcm_player* p) {
   WaitForSingleObject(players_mutex, INFINITE);
   p->next = players;
   players = p;
   ReleaseMutex(players_mutex);
-  return p;
+
+  return players;
 }
 
-static struct pcm_player* _pcm_player_remove(DJ_HANDLE h) {
+static struct pcm_player* _pcm_player_list_remove(DJ_HANDLE h) {
   struct pcm_player* p = NULL;
   if (h != NULL) {
     WaitForSingleObject(players_mutex, INFINITE);
     p = players;
 
-    if (h == players) {
+    if (p == h) {
       players = players->next;
       p->next = NULL;
     } else {
@@ -524,401 +645,45 @@ static struct pcm_player* _pcm_player_remove(DJ_HANDLE h) {
   return p;
 }
 
-static void _pcm_close_stream(struct pcm_player* p) {
-  unsigned int err;
-  waveOutReset(p->stream);
-  err = waveOutUnprepareHeader(p->stream, &p->header[0], sizeof(WAVEHDR));
-  if (err != MMSYSERR_NOERROR)
-    printf("midiOutUnprepareHeader %d\n", err);
-  err = waveOutUnprepareHeader(p->stream, &p->header[1], sizeof(WAVEHDR));
-  if (err != MMSYSERR_NOERROR)
-    printf("midiOutUnprepareHeader %d\n", err);
-  waveOutClose(p->stream);
-  p->stream = 0;
+static struct pcm_player* _pcm_stream_open(struct pcm_player* p) {
+  SDL_AudioSpec audioSpec, have;
+  SDL_AudioDeviceID id;
+
+  SDL_memset(&audioSpec, 0, sizeof(audioSpec)); /* or SDL_zero(want) */
+
+  audioSpec.format = AUDIO_U8;
+  audioSpec.channels = p->sample->channels;
+  audioSpec.freq = p->sample->sample_rate;
+  audioSpec.samples = MAX_BUFFER_SIZE;
+  audioSpec.userdata = p;
+  audioSpec.callback = _pcm_audio_callback;
+
+  id = SDL_OpenAudioDevice(NULL, 0, &audioSpec, &have, 0);
+
+  p->sample->silence = have.silence;
+
+  p->device = id;
+
+  return p;
 }
 
-void pcm_sample_close(DJ_HANDLE h) {
-  struct pcm_player* p = _pcm_player_remove(h);
-  if (p == NULL) {
-    return;
-  }
-
-  // The player has been removed from the global list. Any further calls
-  // using this handle will return MMSYSERR_INVALPARAM.
-
-  // Start shutting down the thread. If it's still playing, stop it.
-  WaitForSingleObject(p->mutex, INFINITE);
-  if (p->state != STATE_STOPPED) {
-    p->state = STATE_STOPPING;
-    ResetEvent(p->ready);
-
-    SetEvent(p->event);
-    ReleaseMutex(p->mutex);
-    WaitForSingleObject(p->ready, INFINITE);
-  } else
-    ReleaseMutex(p->mutex);
-
-  // Player thread should be in the STATE_STOPPED state. No existing
-  // handles can restart it. Let's close things out.
-  _pcm_close_stream(p);
-  _pcm_player_shutdown(p);
-
-  // all the resources for the sample should be released and the
-  // player is in the pool which will allow us to not need to
-  // wait for another thread to spin up the next time we need
-  // a player.
-
-  return;
+static void _pcm_stream_close(struct pcm_player* p) {
+  SDL_CloseAudioDevice(p->device);
 }
 
-DJ_RESULT pcm_play(DJ_HANDLE h) {
-  struct pcm_player* p = (struct pcm_player*)h;
-  unsigned int err = MMSYSERR_NOERROR;
 
-  if (_pcm_is_handle_valid(h) == false) {
-    printf("pcm_play(): invalid handle %p\n", h);
-    return MMSYSERR_INVALPARAM;
-  }
 
-  WaitForSingleObject(p->mutex, INFINITE);
-  if (p->state == STATE_STOPPED) {
-    p->state = STATE_STARTING;
-    SetEvent(p->event);
-  }
-  ReleaseMutex(p->mutex);
 
-  return err;
-}
-
-DJ_RESULT pcm_stop(DJ_HANDLE h) {
-  struct pcm_player* p = (struct pcm_player*)h;
-  unsigned int err = MMSYSERR_NOERROR;
-
-  if (_pcm_is_handle_valid(h) == false) {
-    return MMSYSERR_INVALPARAM;
-  }
-
-  WaitForSingleObject(p->mutex, INFINITE);
-  if (p->state != STATE_STOPPED) {
-    ResetEvent(p->ready);
-    p->state = STATE_STOPPING;
-
-    SetEvent(p->event);
-    ReleaseMutex(p->mutex);
-    WaitForSingleObject(p->ready, INFINITE);
-  } else {
-    ReleaseMutex(p->mutex);
-  }
-
-  return MMSYSERR_NOERROR;
-}
-
-DJ_RESULT pcm_pause(DJ_HANDLE h) {
-  struct pcm_player* p = (struct pcm_player*)h;
-  unsigned int err = MMSYSERR_NOERROR;
-
-  if (_pcm_is_handle_valid(h) == false) {
-    return MMSYSERR_INVALPARAM;
-  }
-
-  WaitForSingleObject(p->mutex, INFINITE);
-  if (p->state == STATE_PLAYING) {
-    err = waveOutPause(p->stream);
-    if (err == MMSYSERR_NOERROR)
-      p->state = STATE_PAUSED;
-    else {
-      printf("err pausing: %d\n", err);
-      p->state = STATE_ERROR;
-    }
-  }
-  ReleaseMutex(p->mutex);
-
-  return err;
-}
-
-DJ_RESULT pcm_resume(DJ_HANDLE h) {
-  struct pcm_player* p = (struct pcm_player*)h;
-  unsigned int err = MMSYSERR_NOERROR;
-
-  if (_pcm_is_handle_valid(h) == false) {
-    return MMSYSERR_INVALPARAM;
-  }
-
-  WaitForSingleObject(p->mutex, INFINITE);
-  if (p->state == STATE_PAUSED) {
-    err = waveOutRestart(p->stream);
-    if (err == MMSYSERR_NOERROR)
-      p->state = STATE_PLAYING;
-    else {
-      printf("err restart: %d\n", err);
-      p->state = STATE_ERROR;
-    }
-  }
-  ReleaseMutex(p->mutex);
-
-  return err;
-}
-
-DJ_RESULT pcm_set_volume_left(DJ_HANDLE h, unsigned int level) {
-  unsigned int old = 0, vol = 0;
-  struct pcm_player* p = (struct pcm_player*)h;
-  unsigned int err = MMSYSERR_NOERROR;
-
-  if (_pcm_is_handle_valid(h)) {
-    WaitForSingleObject(p->mutex, INFINITE);
-
-    p->lvolume = level;
-    ReleaseMutex(p->mutex);
-    return err;
-  }
-
-  err = waveOutGetVolume((HWAVEOUT)WAVE_MAPPER, (LPDWORD)&old);
-  if (err == MMSYSERR_NOERROR) {
-    vol = MAKELONG(LOWORD(level), HIWORD(old));
-    err = waveOutSetVolume((HWAVEOUT)WAVE_MAPPER, vol);
-  }
-
-  return err;
-}
-
-DJ_RESULT pcm_set_volume_right(DJ_HANDLE h, unsigned int level) {
-  unsigned int old = 0, vol = 0;
-  struct pcm_player* p = (struct pcm_player*)h;
-  unsigned int err = MMSYSERR_NOERROR;
-
-  if (_pcm_is_handle_valid(h)) {
-    WaitForSingleObject(p->mutex, INFINITE);
-
-    p->rvolume = level;
-    ReleaseMutex(p->mutex);
-    return err;
-  }
-
-  err = waveOutGetVolume((HWAVEOUT)WAVE_MAPPER, (LPDWORD)&old);
-  if (err == MMSYSERR_NOERROR) {
-    vol = MAKELONG(LOWORD(old), LOWORD(level));
-    err = waveOutSetVolume((HWAVEOUT)WAVE_MAPPER, vol);
-  }
-
-
-  return err;
-}
-
-DJ_RESULT pcm_set_volume(DJ_HANDLE h, unsigned int level) {
-  unsigned int err = MMSYSERR_NOERROR;
-
-  err = pcm_set_volume_left(h, level);
-  if (err == MMSYSERR_NOERROR)
-    err = pcm_set_volume_right(h, level);
-
-  return err;
-}
-
-DJ_RESULT pcm_volume_left(DJ_HANDLE h, unsigned int dir) {
-  unsigned int old = 0, vol = 0;
-  const unsigned int val = 3277;
-  struct pcm_player* p = (struct pcm_player*)h;
-  unsigned int err = MMSYSERR_NOERROR;
-  HWAVEOUT stream = (HWAVEOUT)WAVE_MAPPER;
-  boolean valid = false;
-
-  valid = _pcm_is_handle_valid(h);
-  if (valid == true) {
-    stream = p->stream;
-    WaitForSingleObject(p->mutex, INFINITE);
-  }
-
-  err = waveOutGetVolume(stream, (LPDWORD)&old);
-  if (err == MMSYSERR_NOERROR) {
-    vol = LOWORD(old);
-
-    if (dir == VOL_UP) {
-      if (0xffff - vol <= val)
-        vol = 0xffff;
-      else
-        vol += val;
-    } else {
-      if (vol <= val)
-        vol = 0;
-      else
-        vol -= val;
-    }
-
-    vol = MAKELONG(vol, HIWORD(old));
-    err = waveOutSetVolume(stream, vol);
-  }
-
-  if (valid == true)
-    ReleaseMutex(p->mutex);
-
-  return err;
-}
-
-DJ_RESULT pcm_volume_right(DJ_HANDLE h, unsigned int dir) {
-  unsigned int old = 0, vol = 0;
-  const unsigned int val = 3277;
-  struct pcm_player* p = (struct pcm_player*)h;
-  unsigned int err = MMSYSERR_NOERROR;
-  HWAVEOUT stream = (HWAVEOUT)WAVE_MAPPER;
-  boolean valid = false;
-
-  valid = _pcm_is_handle_valid(h);
-  if (valid == true) {
-    stream = p->stream;
-    WaitForSingleObject(p->mutex, INFINITE);
-  }
-
-  err = waveOutGetVolume(stream, (LPDWORD)&old);
-  if (err == MMSYSERR_NOERROR) {
-    vol = HIWORD(old);
-
-    if (dir == VOL_UP) {
-      if (0xffff - vol <= val)
-        vol = 0xffff;
-      else
-        vol += val;
-    } else {
-      if (vol <= val)
-        vol = 0;
-      else
-        vol -= val;
-    }
-
-    vol = MAKELONG(LOWORD(old), vol);
-    err = waveOutSetVolume(stream, vol);
-  }
-
-  if (valid == true)
-    ReleaseMutex(p->mutex);
-
-  return err;
-}
-
-DJ_RESULT pcm_volume(DJ_HANDLE h, unsigned int dir) {
-  unsigned int err;
-
-  err = pcm_volume_left(h, dir);
-  if (err == MMSYSERR_NOERROR)
-    err = pcm_volume_right(h, dir);
-
-  return err;
-}
-
-DJ_RESULT pcm_set_looping(DJ_HANDLE h, boolean looping) {
-  struct pcm_player* p = (struct pcm_player*)h;
-  unsigned int err = MMSYSERR_NOERROR;
-
-  if (_pcm_is_handle_valid(h) == false) {
-    return MMSYSERR_INVALPARAM;
-  }
-
-  WaitForSingleObject(p->mutex, INFINITE);
-
-  p->looping = looping;
-
-  ReleaseMutex(p->mutex);
-
-  return MMSYSERR_NOERROR;
-}
-
-boolean pcm_is_looping(DJ_HANDLE h) {
-  struct pcm_player* p = (struct pcm_player*)h;
-  unsigned int err = MMSYSERR_NOERROR;
-  boolean looping;
-
-  if (_pcm_is_handle_valid(h) == false) {
-    return false;
-  }
-
-  WaitForSingleObject(p->mutex, INFINITE);
-
-  looping = p->looping;
-
-  ReleaseMutex(p->mutex);
-
-  return looping;
-}
-
-boolean pcm_is_playing(DJ_HANDLE h) {
-  struct pcm_player* p = (struct pcm_player*)h;
-  boolean ret = false;
-
-  if (_pcm_is_handle_valid(h) == false)
-    ret = false;
-  else
-    ret = (p->state == STATE_PLAYING);
-
-  return ret;
-}
-
-boolean pcm_is_paused(DJ_HANDLE h) {
-  struct pcm_player* p = (struct pcm_player*)h;
-  boolean ret = false;
-
-  if (_pcm_is_handle_valid(h) == false)
-    ret = false;
-  else
-    ret = (p->state == STATE_PAUSED);
-
-  return ret;
-}
-
-boolean pcm_is_stopped(DJ_HANDLE h) {
-  struct pcm_player* p = (struct pcm_player*)h;
-  boolean ret = false;
-
-  if (_pcm_is_handle_valid(h) == false)
-    ret = false;
-  else
-    ret = (p->state == STATE_STOPPED);
-
-  return ret;
-}
-
-static DJ_RESULT pcm_rewind(DJ_HANDLE h) {
-  struct pcm_player* p = (struct pcm_player*)h;
-
-  if (_pcm_is_handle_valid(h) == false)
-    return MMSYSERR_INVALPARAM;
-
-//  waveOutReset(p->stream);
-
-  if (p->sample != NULL)
-    p->sample->ptr = p->sample->raw_bytes;
-
-  return MMSYSERR_NOERROR;
-}
-
-static unsigned int _pcm_get_streambuf(struct pcm_sample* s, unsigned char* out, unsigned int* outlen) {
-  unsigned int blocklen = (s->sample_size / 8) * s->channels;
-  unsigned int streambufsize = MAX_BUFFER_SIZE - (MAX_BUFFER_SIZE % blocklen);
-
-  unsigned int bytesread = s->ptr - s->raw_bytes;
-  unsigned int bytesleft = s->raw_len - bytesread;
-
-  *outlen = 0;
-  if (bytesleft == 0)
-    return 0;
-
-  if (bytesleft >= streambufsize)
-    bytesread = streambufsize;
-  else
-    bytesread = bytesleft;
-
-  memcpy(out, s->ptr, bytesread);
-
-  s->sample_size;
-  s->ptr += bytesread;
-  *outlen = bytesread;
-  return 0;
-}
-
-static unsigned int _pcm_adjust_volume(unsigned char* out, unsigned int len, unsigned int sample_size, unsigned int channels, unsigned int lvol, unsigned int rvol) {
+static unsigned int _pcm_adjust_volume(unsigned char* out, unsigned int len, struct pcm_player* p) {
   unsigned int i, length;
-  if (channels == 1)
+
+  unsigned int lvol = p->lvolume;
+  unsigned int rvol = p->rvolume;
+
+  if (p->sample->channels == 1)
     rvol = lvol;
 
-  switch (sample_size) {
+  switch (p->sample->sample_size) {
   case 8:
     length = len;
     lvol >>= 8;
@@ -949,9 +714,74 @@ static unsigned int _pcm_adjust_volume(unsigned char* out, unsigned int len, uns
   return 0;
 }
 
+
 #ifdef PCM_PLAYER_STANDALONE
 
-void pcm_callback(unsigned int val) {
+DJ_RESULT pcm_volume_left(DJ_HANDLE h, unsigned int dir) {
+  unsigned int vol = 0;
+  const unsigned int val = 3277;
+  struct pcm_player* p = (struct pcm_player*)h;
+
+  if(!_pcm_is_handle_valid(h)) {
+    return INVALID_PARAM;
+  }
+
+  vol = pcm_get_volume_left(h);
+
+  if (dir == VOL_UP) {
+    if (0xffff - vol <= val)
+      vol = 0xffff;
+    else
+      vol += val;
+  } else {
+    if (vol <= val)
+      vol = 0;
+    else
+      vol -= val;
+  }
+
+  pcm_set_volume_left(h, vol);
+  return NOERROR;
+}
+
+DJ_RESULT pcm_volume_right(DJ_HANDLE h, unsigned int dir) {
+  unsigned int vol = 0;
+  const unsigned int val = 3277;
+  struct pcm_player* p = (struct pcm_player*)h;
+
+  if (!_pcm_is_handle_valid(h)) {
+    return INVALID_PARAM;
+  }
+
+  vol = pcm_get_volume_right(h);
+
+  if (dir == VOL_UP) {
+    if (0xffff - vol <= val)
+      vol = 0xffff;
+    else
+      vol += val;
+  } else {
+    if (vol <= val)
+      vol = 0;
+    else
+      vol -= val;
+  }
+
+  pcm_set_volume_right(h, vol);
+  return NOERROR;
+}
+
+DJ_RESULT pcm_volume(DJ_HANDLE h, unsigned int dir) {
+  unsigned int err;
+
+  err = pcm_volume_left(h, dir);
+  if (err == NOERROR)
+    err = pcm_volume_right(h, dir);
+
+  return err;
+}
+
+void standalone_callback(void* data) {
   printf("\r       \rStopped");
 }
 
@@ -961,50 +791,33 @@ int main(int argc, char* argv[]) {
   unsigned int wavbuflen = 0;
   unsigned char c;
 
-  WAVEOUTCAPS caps;
+  DJ_HANDLE s;
 
   unsigned long n, i;
   unsigned int err;
 
-  DJ_HANDLE s = NULL;
-
-  if (argc > 1)
-    filename = (unsigned char*)argv[1];
-  else {
+  if (argc <= 1) {
     printf("Usage: %s <filename>\n", argv[0]);
     return 0;
   }
 
-  n = waveOutGetNumDevs();
+  SDL_Init(SDL_INIT_AUDIO);
+
+  n = SDL_GetNumAudioDevices(0);
   if (n == 0) {
     fprintf(stderr, "No WAVE devices found!\n");
     return 0;
   }
 
   for (i = 0; i < n; i++) {
-    if (!waveOutGetDevCaps(i, &caps, sizeof(WAVEOUTCAPS))) {
-      printf("Device %lu: %s\r\n", i, caps.szPname);
-      if (caps.dwSupport & WAVECAPS_PITCH) {
-        printf(" - supports pitch control.\n");
-      }
-      if (caps.dwSupport & WAVECAPS_VOLUME) {
-        printf(" - supports volume control.\n");
-      }
-      if (caps.dwSupport & WAVECAPS_LRVOLUME) {
-        printf(" - supports separate left and right volume control.\n");
-      }
-      if (caps.dwSupport & WAVECAPS_PLAYBACKRATE) {
-        printf(" - supports playback rate control.\n");
-      }
-      if (caps.dwSupport & WAVECAPS_SYNC) {
-        printf(" - the driver is synchronous and will block while playing a buffer.\n");
-      }
-      if (caps.dwSupport & WAVECAPS_SAMPLEACCURATE) {
-        printf(" - returns sample-accurate position information.\n");
-      }
-      printf("\n");
-    }
+      printf("Device %lu: %s\r\n", i, SDL_GetAudioDeviceName(i, 0));
   }
+
+  pcm_init();
+
+  printf("loading\n");
+
+  filename = argv[1];
 
   wavbuf = load_file(filename, &wavbuflen);
   if (wavbuf == NULL) {
@@ -1012,15 +825,15 @@ int main(int argc, char* argv[]) {
     return 0;
   }
 
-  pcm_init();
-
-  s = pcm_sample_open(11025, 8, 1, wavbuf, wavbuflen, pcm_callback);
+  s = pcm_sound_open(wavbuf, wavbuflen, standalone_callback);
   if (s == NULL) {
     printf("Failed to open sample.\n");
     return 0;
   }
 
+
   printf("Loaded %s\n", filename);
+  free(wavbuf);
 
   printf("\n(p) play/pause, (s) stop, (l) loop on/off, (q) quit, (+/-) volume up/down\n");
   printf("\r       \rStopped");
@@ -1029,28 +842,30 @@ int main(int argc, char* argv[]) {
     switch (c) {
     case 'l':
     case 'L':
-      pcm_set_looping(s, !pcm_is_looping(s));
+
+     pcm_set_looping(s, !pcm_is_looping(s));
+
       break;
     case 'p':
     case 'P':
       if (pcm_is_stopped(s)) {
         err = pcm_play(s);
-        if (err != MMSYSERR_NOERROR) {
-          fprintf(stderr, "Error playing file %s, error %d\n", filename, err);
+        if (err != NOERROR) {
+          //fprintf(stderr, "Error playing file %s, error %d\n", filename, err);
           goto error;
         }
         printf("\r       \rPlaying");
       } else if (pcm_is_playing(s)) {
         err = pcm_pause(s);
-        if (err != MMSYSERR_NOERROR) {
-          fprintf(stderr, "Error pausing file %s, error %d\n", filename, err);
+        if (err != NOERROR) {
+          //fprintf(stderr, "Error pausing file %s, error %d\n", filename, err);
           goto error;
         }
         printf("\r       \rPaused");
       } else if (pcm_is_paused(s)) {
         err = pcm_resume(s);
-        if (err != MMSYSERR_NOERROR) {
-          fprintf(stderr, "Error pausing file %s, error %d\n", filename, err);
+        if (err != NOERROR) {
+          //fprintf(stderr, "Error pausing file %s, error %d\n", filename, err);
           goto error;
         }
         printf("\r       \rPlaying");
@@ -1058,28 +873,21 @@ int main(int argc, char* argv[]) {
       break;
     case 's':
     case 'S':
-      err = pcm_stop(s);
-      if (err != MMSYSERR_NOERROR) {
-        fprintf(stderr, "Error stopping file %s, error %d\n", filename, err);
-        goto error;
-      }
-      printf("\r       \rStopped");
+        err = pcm_stop(s);
+        if (err != NOERROR) {
+          //fprintf(stderr, "Error stopping file %s, error %d\n", filename, err);
+          goto error;
+        }
+        printf("\r       \rStopped");
+
       break;
     case '-':
     case '_':
       err = pcm_volume(s, VOL_DOWN);
-      if (err != MMSYSERR_NOERROR) {
-        fprintf(stderr, "Error adjusting volume, error %d\n", err);
-        goto error;
-      }
       break;
     case '=':
     case '+':
       err = pcm_volume(s, VOL_UP);
-      if (err != MMSYSERR_NOERROR) {
-        fprintf(stderr, "Error adjusting volume, error %d\n", err);
-        goto error;
-      }
       break;
     case 'q':
     default:
@@ -1088,10 +896,10 @@ int main(int argc, char* argv[]) {
   }
 
 error:
-  pcm_sample_close(s);
-  pcm_shutdown();
 
-  free(wavbuf);
+  pcm_sound_close(s);
+
+  pcm_shutdown();
 
   return EXIT_SUCCESS;
 }

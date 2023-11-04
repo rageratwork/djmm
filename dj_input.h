@@ -1,6 +1,6 @@
 /*
  * DjMM
- * v0.2
+ * v0.1
  *
  * Copyright (c) 2011, David J. Rager
  * djrager@fourthwoods.com
@@ -24,13 +24,14 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  * IN THE SOFTWARE.
  *
- * mus_player.h
+ * dj_input.h
  *
- *  Created on: Dec 3, 2011
+ *  Created on: Jan 1, 2012
  *      Author: David J. Rager
  */
-#ifndef MUS_PLAYER_H_
-#define MUS_PLAYER_H_
+
+#ifndef DJ_INPUT_H_
+#define DJ_INPUT_H_
 
 #include "dj_types.h"
 
@@ -38,36 +39,45 @@
 extern "C" {
 #endif
 
-typedef void (*mus_notify_cb)(unsigned int val);
+#define KEY_DOWN(key) (((key) & 0x80) ? 1 : 0)
+#define KEY_UP(key)   (((key) & 0x80) ? 0 : 1)
 
-DJ_RESULT mus_init();
-void mus_shutdown();
+#define MOUSE_DOWN(btn) (((btn) & 0x80) ? 1 : 0)
+#define MOUSE_UP(btn)   (((btn) & 0x80) ? 0 : 1)
 
-DJ_HANDLE mus_score_open(unsigned char* buf, unsigned int len, mus_notify_cb callback);
-void mus_score_close(DJ_HANDLE h);
+#define JOYBTN_DOWN(key) (((key) & 0x80) ? 1 : 0)
+#define JOYBTN_UP(key)   (((key) & 0x80) ? 0 : 1)
 
-DJ_RESULT mus_play(DJ_HANDLE h);
-DJ_RESULT mus_stop(DJ_HANDLE h);
+struct mouse_state {
+	int x;
+	int y;
+	unsigned int b1;
+	unsigned int b2;
+	unsigned int b3;
+	unsigned int b4;
+};
 
-DJ_RESULT mus_pause(DJ_HANDLE h);
-DJ_RESULT mus_resume(DJ_HANDLE h);
+struct joystick_state {
+	int x;
+	int y;
+	int dpad;
+	unsigned int b1;
+	unsigned int b2;
+	unsigned int b3;
+	unsigned int b4;
+};
 
-DJ_RESULT mus_set_looping(DJ_HANDLE h, boolean looping);
+unsigned int dji_init();
+unsigned int dji_poll();
+unsigned int dji_get_keyboard_state(unsigned char* keystate, unsigned int len);
 
-DJ_RESULT mus_set_volume_left(DJ_HANDLE h, unsigned int level);
-DJ_RESULT mus_set_volume_right(DJ_HANDLE h, unsigned int level);
-DJ_RESULT mus_set_volume(DJ_HANDLE h, unsigned int level);
-DJ_RESULT mus_volume_left(DJ_HANDLE h, unsigned int dir);
-DJ_RESULT mus_volume_right(DJ_HANDLE h, unsigned int dir);
-DJ_RESULT mus_volume(DJ_HANDLE h, unsigned int dir);
+unsigned int dji_get_mouse_state(struct mouse_state* mouse);
+unsigned int dji_get_joystick_state(struct joystick_state* joystick);
 
-boolean mus_is_playing(DJ_HANDLE h);
-boolean mus_is_paused(DJ_HANDLE h);
-boolean mus_is_stopped(DJ_HANDLE h);
-boolean mus_is_looping(DJ_HANDLE h);
+unsigned int dji_shutdown();
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* MUS_PLAYER_H_ */
+#endif /* DJ_INPUT_H_ */

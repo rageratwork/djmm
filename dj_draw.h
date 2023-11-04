@@ -24,27 +24,29 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  * IN THE SOFTWARE.
  *
- * dx_draw.h
+ * dj_draw.h
  *
  *  Created on: Jan 1, 2012
  *      Author: David J. Rager
  */
 
-#ifndef DX_DRAW_H_
-#define DX_DRAW_H_
+#ifndef DJ_DRAW_H_
+#define DJ_DRAW_H_
+
+#include "dj_types.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-unsigned int dxd_init(HINSTANCE hinstance, HWND hwnd, UINT screen_width, UINT screen_height, UINT bpp, BOOL fullScreen);
-unsigned int dxd_shutdown();
+unsigned int djd_init(const char* title, unsigned int screen_width, unsigned int screen_height, unsigned int bpp, boolean fullScreen);
+unsigned int djd_shutdown();
 
-unsigned int dxd_setpalette(unsigned char* bytes);
-unsigned int dxd_draw(unsigned char* src, UINT width, UINT height);
+unsigned int djd_setpalette(unsigned char* bytes);
+unsigned int djd_draw(unsigned char* src, unsigned int width, unsigned int height);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* DX_DRAW_H_ */
+#endif /* DJ_DRAW_H_ */

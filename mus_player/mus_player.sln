@@ -7,6 +7,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "mus_player", "mus_player.vc
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "pcm_player", "..\pcm_player\pcm_player.vcxproj", "{D43DF669-6BBC-4D9D-BBB3-CDA07F098643}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "pcm_player2", "..\pcm_player2.vcxproj", "{7B417236-2B30-4105-ACF3-FEE1597F67BA}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -31,6 +33,14 @@ Global
 		{D43DF669-6BBC-4D9D-BBB3-CDA07F098643}.Release|x64.Build.0 = Release|x64
 		{D43DF669-6BBC-4D9D-BBB3-CDA07F098643}.Release|x86.ActiveCfg = Release|Win32
 		{D43DF669-6BBC-4D9D-BBB3-CDA07F098643}.Release|x86.Build.0 = Release|Win32
+		{7B417236-2B30-4105-ACF3-FEE1597F67BA}.Debug|x64.ActiveCfg = Debug|x64
+		{7B417236-2B30-4105-ACF3-FEE1597F67BA}.Debug|x64.Build.0 = Debug|x64
+		{7B417236-2B30-4105-ACF3-FEE1597F67BA}.Debug|x86.ActiveCfg = Debug|Win32
+		{7B417236-2B30-4105-ACF3-FEE1597F67BA}.Debug|x86.Build.0 = Debug|Win32
+		{7B417236-2B30-4105-ACF3-FEE1597F67BA}.Release|x64.ActiveCfg = Release|x64
+		{7B417236-2B30-4105-ACF3-FEE1597F67BA}.Release|x64.Build.0 = Release|x64
+		{7B417236-2B30-4105-ACF3-FEE1597F67BA}.Release|x86.ActiveCfg = Release|Win32
+		{7B417236-2B30-4105-ACF3-FEE1597F67BA}.Release|x86.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

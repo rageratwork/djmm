@@ -40,13 +40,17 @@
 extern "C" {
 #endif
 
-typedef void (*pcm_notify_cb)(unsigned int val);
+#define NOERROR 0
+#define ERROR -1
+#define INVALID_PARAM -1
+
+typedef void (*pcm_notify_cb)(void* data);
 
 DJ_RESULT pcm_init();
 void pcm_shutdown();
 
-DJ_HANDLE pcm_sample_open(unsigned int sample_rate, unsigned int sample_size, unsigned int channels, unsigned char* buf, unsigned int len, pcm_notify_cb callback);
-void pcm_sample_close(DJ_HANDLE h);
+DJ_HANDLE pcm_sound_open(unsigned char* buf, unsigned int len, pcm_notify_cb callback);
+void pcm_sound_close(DJ_HANDLE h);
 
 DJ_RESULT pcm_play(DJ_HANDLE h);
 DJ_RESULT pcm_stop(DJ_HANDLE h);
@@ -58,13 +62,10 @@ DJ_RESULT pcm_set_volume_left(DJ_HANDLE h, unsigned int level);
 DJ_RESULT pcm_set_volume_right(DJ_HANDLE h, unsigned int level);
 DJ_RESULT pcm_set_volume(DJ_HANDLE h, unsigned int level);
 
-DJ_RESULT pcm_volume_left(DJ_HANDLE h, unsigned int dir);
-DJ_RESULT pcm_volume_right(DJ_HANDLE h, unsigned int dir);
-DJ_RESULT pcm_volume(DJ_HANDLE h, unsigned int dir);
-
 boolean pcm_is_playing(DJ_HANDLE h);
 boolean pcm_is_paused(DJ_HANDLE h);
 boolean pcm_is_stopped(DJ_HANDLE h);
+boolean pcm_is_looping(DJ_HANDLE h);
 
 #ifdef __cplusplus
 }

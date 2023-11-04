@@ -38,8 +38,7 @@
 #ifndef MID_PLAYER_H_
 #define MID_PLAYER_H_
 
-#include <windows.h>
-#include <mmsystem.h>
+#include "dj_types.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -65,7 +64,7 @@ typedef void (*mid_notify_cb)(unsigned int val);
  *
  * @return Returns MMSYSERR_NOERROR if successful, MMSYSERR_ERROR on error.
  */
-MMRESULT mid_init();
+DJ_RESULT mid_init();
 
 /**
  * @brief Shut down the MIDI subsystem.
@@ -88,7 +87,7 @@ void mid_shutdown();
  *				otherwise. This HANDLE must be closed by calling mid_score_close()
  *				when finished.
  */
-HANDLE mid_score_open(unsigned char* buf, unsigned int len);
+DJ_HANDLE mid_score_open(unsigned char* buf, unsigned int len);
 
 /**
  * @brief this function closes an open MIDI score.
@@ -99,7 +98,7 @@ HANDLE mid_score_open(unsigned char* buf, unsigned int len);
  *
  * @param[in] h	The HANDLE to the MIDI score.
  */
-void mid_score_close(HANDLE h);
+void mid_score_close(DJ_HANDLE h);
 
 /**
  * @brief This function begins playing an open MIDI score.
@@ -110,7 +109,7 @@ void mid_score_close(HANDLE h);
  * @return		This function returns MMSYSERR_NOERROR if successful, an error code
  * 				otherwise.
  */
-MMRESULT mid_play(HANDLE h);
+DJ_RESULT mid_play(DJ_HANDLE h);
 
 /**
  * @brief This function stops a playing MIDI score.
@@ -121,7 +120,7 @@ MMRESULT mid_play(HANDLE h);
  * @return		This function returns MMSYSERR_NOERROR if successful, an error code
  * 				otherwise.
  */
-MMRESULT mid_stop(HANDLE h);
+DJ_RESULT mid_stop(DJ_HANDLE h);
 
 /**
  * @brief This function registers a callback to receive MIDI notifications.
@@ -135,7 +134,7 @@ MMRESULT mid_stop(HANDLE h);
  * @return			This function returns MMSYSERR_NOERROR if successful, an error code
  * 					otherwise.
  */
-MMRESULT mid_register_callback(HANDLE h, mid_notify_cb cb);
+DJ_RESULT mid_register_callback(DJ_HANDLE h, mid_notify_cb cb);
 
 /**
  * @brief This function pauses a playing MIDI score.
@@ -147,7 +146,7 @@ MMRESULT mid_register_callback(HANDLE h, mid_notify_cb cb);
  * @return		This function returns MMSYSERR_NOERROR if successful, an error code
  * 				otherwise.
  */
-MMRESULT mid_pause(HANDLE h);
+DJ_RESULT mid_pause(DJ_HANDLE h);
 
 /**
  * @brief This function resumes a paused MIDI score.
@@ -159,7 +158,7 @@ MMRESULT mid_pause(HANDLE h);
  * @return		This function returns MMSYSERR_NOERROR if successful, an error code
  * 				otherwise.
  */
-MMRESULT mid_resume(HANDLE h);
+DJ_RESULT mid_resume(DJ_HANDLE h);
 
 /**
  * @brief This function will cause a MIDI score to loop indefinitely.
@@ -172,18 +171,7 @@ MMRESULT mid_resume(HANDLE h);
  * @return				This function returns MMSYSERR_NOERROR if successful, an
  * 						error code otherwise.
  */
-MMRESULT mid_set_looping(HANDLE h, BOOL looping);
-
-/**
- * @brief This function will determine if looping is enable for the score.
- *
- * This function will determine whether or not looping is enabled for the
- * score.
- *
- * @param[in] h	The HANDLE to the MIDI score.
- * @return		TRUE if looping is enabled, FALSE otherwise.
- */
-BOOL mid_get_looping(HANDLE h);
+DJ_RESULT mid_set_looping(DJ_HANDLE h, boolean looping);
 
 /**
  * @brief This function sets the volume for the left channel.
@@ -199,7 +187,7 @@ BOOL mid_get_looping(HANDLE h);
  * @return			This function returns MMSYSERR_NOERROR if successful, an error
  * 					code otherwise.
  */
-MMRESULT mid_set_volume_left(HANDLE h, unsigned int level);
+DJ_RESULT mid_set_volume_left(DJ_HANDLE h, unsigned int level);
 
 /**
  * @brief This function sets the volume for the right channel.
@@ -215,7 +203,7 @@ MMRESULT mid_set_volume_left(HANDLE h, unsigned int level);
  * @return			This function returns MMSYSERR_NOERROR if successful, an error
  * 					code otherwise.
  */
-MMRESULT mid_set_volume_right(HANDLE h, unsigned int level);
+DJ_RESULT mid_set_volume_right(DJ_HANDLE h, unsigned int level);
 
 /**
  * @brief This function sets the volume for all channels.
@@ -235,7 +223,7 @@ MMRESULT mid_set_volume_right(HANDLE h, unsigned int level);
  * @return			This function returns MMSYSERR_NOERROR if successful, an error
  * 					code otherwise.
  */
-MMRESULT mid_set_volume(HANDLE h, unsigned int level);
+DJ_RESULT mid_set_volume(DJ_HANDLE h, unsigned int level);
 
 /**
  * @brief This function retrieves the volume for the left channel.
@@ -251,7 +239,7 @@ MMRESULT mid_set_volume(HANDLE h, unsigned int level);
  * @return				This function returns MMSYSERR_NOERROR if successful, an error
  * 						code otherwise.
  */
-MMRESULT mid_get_volume_left(HANDLE h, unsigned int* level);
+DJ_RESULT mid_get_volume_left(DJ_HANDLE h, unsigned int* level);
 
 /**
  * @brief This function retrieves the volume for the right channel.
@@ -267,7 +255,7 @@ MMRESULT mid_get_volume_left(HANDLE h, unsigned int* level);
  * @return				This function returns MMSYSERR_NOERROR if successful, an error
  * 						code otherwise.
  */
-MMRESULT mid_get_volume_right(HANDLE h, unsigned int* level);
+DJ_RESULT mid_get_volume_right(DJ_HANDLE h, unsigned int* level);
 
 /**
  * @brief This function retrieves the current volume.
@@ -287,7 +275,7 @@ MMRESULT mid_get_volume_right(HANDLE h, unsigned int* level);
  * @return				This function returns MMSYSERR_NOERROR if successful, an error
  * 						code otherwise.
  */
-MMRESULT mid_get_volume(HANDLE h, unsigned int* level);
+DJ_RESULT mid_get_volume(DJ_HANDLE h, unsigned int* level);
 
 /**
  * @brief This function will determine if the score is currently playing.
@@ -297,7 +285,7 @@ MMRESULT mid_get_volume(HANDLE h, unsigned int* level);
  * @param[in] h	The HANDLE to the MIDI score.
  * @return		TRUE if the score is playing, FALSE otherwise.
  */
-BOOL mid_is_playing(HANDLE h);
+boolean mid_is_playing(DJ_HANDLE h);
 
 /**
  * @brief This function will determine if the score is currently paused.
@@ -307,7 +295,7 @@ BOOL mid_is_playing(HANDLE h);
  * @param[in] h	The HANDLE to the MIDI score.
  * @return		TRUE if the score is paused, FALSE otherwise.
  */
-BOOL mid_is_paused(HANDLE h);
+boolean mid_is_paused(DJ_HANDLE h);
 
 /**
  * @brief This function will determine if the score is currently stopped.
@@ -317,7 +305,18 @@ BOOL mid_is_paused(HANDLE h);
  * @param[in] h	The HANDLE to the MIDI score.
  * @return		TRUE if the score is stopped, FALSE otherwise.
  */
-BOOL mid_is_stopped(HANDLE h);
+boolean mid_is_stopped(DJ_HANDLE h);
+
+/**
+ * @brief This function will determine if looping is enable for the score.
+ *
+ * This function will determine whether or not looping is enabled for the
+ * score.
+ *
+ * @param[in] h	The HANDLE to the MIDI score.
+ * @return		TRUE if looping is enabled, FALSE otherwise.
+ */
+boolean mid_is_looping(DJ_HANDLE h);
 
 #ifdef __cplusplus
 }

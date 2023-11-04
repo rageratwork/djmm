@@ -31,6 +31,8 @@
  */
 #include <stdio.h>
 #include <conio.h>
+#include <windows.h>
+#include <mmsystem.h>
 
 #include "mus_player.h"
 
@@ -218,7 +220,7 @@ static DWORD WINAPI mus_player_proc(LPVOID lpParameter) {
 	return 0;
 }
 
-static HANDLE players_mutex = NULL;
+static DJ_HANDLE players_mutex = NULL;
 static struct mus_player* players = NULL; // player handle list.
 
 /*!
@@ -232,7 +234,7 @@ static struct mus_player* players = NULL; // player handle list.
  * @return Returns MMSYSERR_NOERROR if successful, MMSYSERR_ERROR if the mutex
  *  could not be initialized.
  */
-MMRESULT mus_init() {
+DJ_RESULT mus_init() {
 	players = NULL;
 
 	players_mutex = CreateMutex(NULL, FALSE, NULL);
@@ -456,7 +458,7 @@ static struct mus_player* mus_remove_player(struct mus_player* p) {
  * @return Returns a HANDLE value if successful, NULL otherwise. This HANDLE
  * value must be closed by calling mus_score_close() when finished.
  */
-HANDLE mus_score_open(unsigned char* buf, unsigned int len, mus_notify_cb callback) {
+DJ_HANDLE mus_score_open(unsigned char* buf, unsigned int len, mus_notify_cb callback) {
 	unsigned int err = MMSYSERR_NOERROR;
 	struct mus_player* p = NULL;
 	struct mus_score* s = NULL;
@@ -526,19 +528,19 @@ HANDLE mus_score_open(unsigned char* buf, unsigned int len, mus_notify_cb callba
  * @param h
  * @return
  */
-static BOOL mus_is_handle_valid(HANDLE h) {
+static boolean mus_is_handle_valid(DJ_HANDLE h) {
 	struct mus_player* p = players;
 	if (h == NULL)
-		return FALSE;
+		return false;
 
 	while (p != NULL) {
 		if (p == h)
-			return TRUE;
+			return true;
 		else
 			p = p->next;
 	}
 
-	return FALSE;
+	return false;
 }
 
 /*!
@@ -565,11 +567,11 @@ static void mus_close_stream(struct mus_player* p) {
 	p->stream = 0;
 }
 
-void mus_score_close(HANDLE h) {
+void mus_score_close(DJ_HANDLE h) {
 	struct mus_player* p = NULL;
 
 	WaitForSingleObject(players_mutex, INFINITE);
-	if (mus_is_handle_valid(h) == FALSE) {
+	if (mus_is_handle_valid(h) == false) {
 		ReleaseMutex(players_mutex);
 		return;
 	}
@@ -621,13 +623,13 @@ void mus_score_close(HANDLE h) {
 	return;
 }
 
-MMRESULT mus_play(HANDLE h) {
+DJ_RESULT mus_play(DJ_HANDLE h) {
 	struct mus_player* p = (struct mus_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
 	MIDIPROPTIMEDIV prop;
 
 	WaitForSingleObject(players_mutex, INFINITE);
-	if (mus_is_handle_valid(h) == FALSE) {
+	if (mus_is_handle_valid(h) == false) {
 		ReleaseMutex(players_mutex);
 		return MMSYSERR_INVALPARAM;
 	}
@@ -699,12 +701,12 @@ error:
 	return err;
 }
 
-MMRESULT mus_stop(HANDLE h) {
+DJ_RESULT mus_stop(DJ_HANDLE h) {
 	struct mus_player* p = (struct mus_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
 
 	WaitForSingleObject(players_mutex, INFINITE);
-	if (mus_is_handle_valid(h) == FALSE) {
+	if (mus_is_handle_valid(h) == false) {
 		ReleaseMutex(players_mutex);
 		return MMSYSERR_INVALPARAM;
 	}
@@ -726,12 +728,12 @@ MMRESULT mus_stop(HANDLE h) {
 	return MMSYSERR_NOERROR;
 }
 
-MMRESULT mus_pause(HANDLE h) {
+DJ_RESULT mus_pause(DJ_HANDLE h) {
 	struct mus_player* p = (struct mus_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
 
 	WaitForSingleObject(players_mutex, INFINITE);
-	if (mus_is_handle_valid(h) == FALSE) {
+	if (mus_is_handle_valid(h) == false) {
 		ReleaseMutex(players_mutex);
 		return MMSYSERR_INVALPARAM;
 	}
@@ -752,12 +754,12 @@ MMRESULT mus_pause(HANDLE h) {
 	return err;
 }
 
-MMRESULT mus_resume(HANDLE h) {
+DJ_RESULT mus_resume(DJ_HANDLE h) {
 	struct mus_player* p = (struct mus_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
 
 	WaitForSingleObject(players_mutex, INFINITE);
-	if (mus_is_handle_valid(h) == FALSE) {
+	if (mus_is_handle_valid(h) == false) {
 		ReleaseMutex(players_mutex);
 		return MMSYSERR_INVALPARAM;
 	}
@@ -778,16 +780,16 @@ MMRESULT mus_resume(HANDLE h) {
 	return err;
 }
 
-MMRESULT mus_set_volume_left(HANDLE h, unsigned int level) {
+DJ_RESULT mus_set_volume_left(DJ_HANDLE h, unsigned int level) {
 	unsigned int old = 0, vol = 0;
 	struct mus_player* p = (struct mus_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
 	HMIDISTRM stream = (HMIDISTRM)0;
-	BOOL valid = FALSE;
+	boolean valid = false;
 
 	WaitForSingleObject(players_mutex, INFINITE);
 	valid = mus_is_handle_valid(h);
-	if (valid == TRUE) {
+	if (valid == true) {
 		stream = p->stream;
 		WaitForSingleObject(p->mutex, INFINITE);
 	}
@@ -799,22 +801,22 @@ MMRESULT mus_set_volume_left(HANDLE h, unsigned int level) {
 		err = midiOutSetVolume((HMIDIOUT)stream, vol);
 	}
 
-	if (valid == TRUE)
+	if (valid == true)
 		ReleaseMutex(p->mutex);
 
 	return err;
 }
 
-MMRESULT mus_set_volume_right(HANDLE h, unsigned int level) {
+DJ_RESULT mus_set_volume_right(DJ_HANDLE h, unsigned int level) {
 	unsigned int old = 0, vol = 0;
 	struct mus_player* p = (struct mus_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
 	HMIDISTRM stream = (HMIDISTRM)0;
-	BOOL valid = FALSE;
+	boolean valid = false;
 
 	WaitForSingleObject(players_mutex, INFINITE);
 	valid = mus_is_handle_valid(h);
-	if (valid == TRUE) {
+	if (valid == true) {
 		stream = p->stream;
 		WaitForSingleObject(p->mutex, INFINITE);
 	}
@@ -826,13 +828,13 @@ MMRESULT mus_set_volume_right(HANDLE h, unsigned int level) {
 		err = midiOutSetVolume((HMIDIOUT)stream, vol);
 	}
 
-	if (valid == TRUE)
+	if (valid == true)
 		ReleaseMutex(p->mutex);
 
 	return err;
 }
 
-MMRESULT mus_set_volume(HANDLE h, unsigned int level) {
+DJ_RESULT mus_set_volume(DJ_HANDLE h, unsigned int level) {
 	unsigned int err = MMSYSERR_NOERROR;
 
 	err = mus_set_volume_left(h, level);
@@ -842,17 +844,17 @@ MMRESULT mus_set_volume(HANDLE h, unsigned int level) {
 	return err;
 }
 
-MMRESULT mus_volume_left(HANDLE h, unsigned int dir) {
+DJ_RESULT mus_volume_left(DJ_HANDLE h, unsigned int dir) {
 	unsigned int old = 0, vol = 0;
 	const unsigned int val = 3277;
 	struct mus_player* p = (struct mus_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
 	HMIDISTRM stream = (HMIDISTRM)MIDI_MAPPER;
-	BOOL valid = FALSE;
+	boolean valid = false;
 
 	WaitForSingleObject(players_mutex, INFINITE);
 	valid = mus_is_handle_valid(h);
-	if (valid == TRUE) {
+	if (valid == true) {
 		stream = p->stream;
 		WaitForSingleObject(p->mutex, INFINITE);
 	}
@@ -878,23 +880,23 @@ MMRESULT mus_volume_left(HANDLE h, unsigned int dir) {
 		err = midiOutSetVolume((HMIDIOUT)stream, vol);
 	}
 
-	if (valid == TRUE)
+	if (valid == true)
 		ReleaseMutex(p->mutex);
 
 	return err;
 }
 
-MMRESULT mus_volume_right(HANDLE h, unsigned int dir) {
+DJ_RESULT mus_volume_right(DJ_HANDLE h, unsigned int dir) {
 	unsigned int old = 0, vol = 0;
 	const unsigned int val = 3277;
 	struct mus_player* p = (struct mus_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
 	HMIDISTRM stream = (HMIDISTRM)MIDI_MAPPER;
-	BOOL valid = FALSE;
+	boolean valid = false;
 
 	WaitForSingleObject(players_mutex, INFINITE);
 	valid = mus_is_handle_valid(h);
-	if (valid == TRUE) {
+	if (valid == true) {
 		stream = p->stream;
 		WaitForSingleObject(p->mutex, INFINITE);
 	}
@@ -920,13 +922,13 @@ MMRESULT mus_volume_right(HANDLE h, unsigned int dir) {
 		err = midiOutSetVolume((HMIDIOUT)stream, vol);
 	}
 
-	if (valid == TRUE)
+	if (valid == true)
 		ReleaseMutex(p->mutex);
 
 	return err;
 }
 
-MMRESULT mus_volume(HANDLE h, unsigned int dir) {
+DJ_RESULT mus_volume(DJ_HANDLE h, unsigned int dir) {
 	unsigned int err;
 
 	err = mus_volume_left(h, dir);
@@ -936,12 +938,12 @@ MMRESULT mus_volume(HANDLE h, unsigned int dir) {
 	return err;
 }
 
-MMRESULT mus_set_looping(HANDLE h, BOOL looping) {
+DJ_RESULT mus_set_looping(DJ_HANDLE h, boolean looping) {
 	struct mus_player* p = (struct mus_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
 
 	WaitForSingleObject(players_mutex, INFINITE);
-	if (mus_is_handle_valid(h) == FALSE) {
+	if (mus_is_handle_valid(h) == false) {
 		ReleaseMutex(players_mutex);
 		return MMSYSERR_INVALPARAM;
 	}
@@ -956,15 +958,15 @@ MMRESULT mus_set_looping(HANDLE h, BOOL looping) {
 	return MMSYSERR_NOERROR;
 }
 
-BOOL mus_get_looping(HANDLE h) {
+boolean mus_is_looping(DJ_HANDLE h) {
 	struct mus_player* p = (struct mus_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
-	BOOL looping;
+	boolean looping;
 
 	WaitForSingleObject(players_mutex, INFINITE);
-	if (mus_is_handle_valid(h) == FALSE) {
+	if (mus_is_handle_valid(h) == false) {
 		ReleaseMutex(players_mutex);
-		return FALSE;
+		return false;
 	}
 
 	WaitForSingleObject(p->mutex, INFINITE);
@@ -977,13 +979,13 @@ BOOL mus_get_looping(HANDLE h) {
 	return looping;
 }
 
-BOOL mus_is_playing(HANDLE h) {
+boolean mus_is_playing(DJ_HANDLE h) {
 	struct mus_player* p = (struct mus_player*)h;
-	BOOL ret = FALSE;
+	boolean ret = false;
 
 	WaitForSingleObject(players_mutex, INFINITE);
-	if (mus_is_handle_valid(h) == FALSE)
-		ret = FALSE;
+	if (mus_is_handle_valid(h) == false)
+		ret = false;
 	else
 		ret = (p->state == STATE_PLAYING);
 	ReleaseMutex(players_mutex);
@@ -991,13 +993,13 @@ BOOL mus_is_playing(HANDLE h) {
 	return ret;
 }
 
-BOOL mus_is_paused(HANDLE h) {
+boolean mus_is_paused(DJ_HANDLE h) {
 	struct mus_player* p = (struct mus_player*)h;
-	BOOL ret = FALSE;
+	boolean ret = false;
 
 	WaitForSingleObject(players_mutex, INFINITE);
-	if (mus_is_handle_valid(h) == FALSE)
-		ret = FALSE;
+	if (mus_is_handle_valid(h) == false)
+		ret = false;
 	else
 		ret = (p->state == STATE_PAUSED);
 	ReleaseMutex(players_mutex);
@@ -1005,13 +1007,13 @@ BOOL mus_is_paused(HANDLE h) {
 	return ret;
 }
 
-BOOL mus_is_stopped(HANDLE h) {
+boolean mus_is_stopped(DJ_HANDLE h) {
 	struct mus_player* p = (struct mus_player*)h;
-	BOOL ret = FALSE;
+	boolean ret = false;
 
 	WaitForSingleObject(players_mutex, INFINITE);
-	if (mus_is_handle_valid(h) == FALSE)
-		ret = FALSE;
+	if (mus_is_handle_valid(h) == false)
+		ret = false;
 	else
 		ret = (p->state == STATE_STOPPED);
 	ReleaseMutex(players_mutex);
@@ -1226,7 +1228,7 @@ int main(int argc, char* argv[]) {
 	unsigned long n, i;
 	unsigned int err;
 
-	HANDLE score;
+	DJ_HANDLE score;
 
 	setvbuf(stdout, NULL, _IONBF, 0);
 
@@ -1241,7 +1243,7 @@ int main(int argc, char* argv[]) {
 
 	for (i = 0; i < n; i++) {
 		if (!midiOutGetDevCaps(i, &caps, sizeof(MIDIOUTCAPS))) {
-			printf("Device %lu: %s\r\n", i, caps.szPname);
+			printf("Device %lu: %ws\r\n", i, caps.szPname);
 			if (caps.dwSupport & MIDICAPS_CACHE) {
 				printf(" - supports patch caching.\n");
 			}
@@ -1351,7 +1353,7 @@ error:
 
 unsigned char* load_file(unsigned char* filename, unsigned int* len) {
 	unsigned char* buf;
-	unsigned int ret;
+	size_t ret;
 	FILE* f = fopen((char*)filename, "rb");
 	if (f == NULL)
 		return 0;

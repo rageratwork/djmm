@@ -32,6 +32,8 @@
 #include <stdio.h>
 #include <conio.h>
 #include <limits.h>
+#include <windows.h>
+#include <mmsystem.h>
 
 #include "mid_player.h"
 
@@ -218,8 +220,8 @@ static void mid_player_shutdown(struct mid_player* p);
 static void mid_close_stream(struct mid_player* p);
 static void mid_rewind(struct mid_score* m);
 
-static MMRESULT mid_lock_score(HANDLE h);
-static MMRESULT mid_unlock_score(HANDLE h);
+static DJ_RESULT mid_lock_score(DJ_HANDLE h);
+static DJ_RESULT mid_unlock_score(DJ_HANDLE h);
 
 static void CALLBACK mid_callback_proc(HMIDIOUT hmo, UINT wMsg, DWORD_PTR dwInstance, DWORD_PTR dwParam1, DWORD_PTR dwParam2)
 {
@@ -450,10 +452,10 @@ stopped:
     return 0;
 }
 
-static HANDLE players_mutex = NULL;
+static DJ_HANDLE players_mutex = NULL;
 static struct mid_player* players = NULL; // player handle list.
 
-MMRESULT mid_init()
+DJ_RESULT mid_init()
 {
 	players = NULL;
 
@@ -742,7 +744,7 @@ static void mid_player_shutdown(struct mid_player* p)
 	free(p);
 }
 
-HANDLE mid_score_open(unsigned char* buf, unsigned int len)
+DJ_HANDLE mid_score_open(unsigned char* buf, unsigned int len)
 {
 	unsigned int err = MMSYSERR_NOERROR;
 	struct mid_player* p = NULL;
@@ -845,21 +847,21 @@ error1:
  * @param h	The handle to test
  * @return	TRUE if the handle is valid, FALSE otherwise.
  */
-static BOOL mid_is_handle_valid(HANDLE h)
+static boolean mid_is_handle_valid(DJ_HANDLE h)
 {
 	struct mid_player* p = players;
 	if(h == NULL)
-		return FALSE;
+		return false;
 
 	while(p != NULL)
 	{
 		if(p == h)
-			return TRUE;
+			return true;
 		else
 			p = p->next;
 	}
 
-	return FALSE;
+	return false;
 }
 
 /**
@@ -902,7 +904,7 @@ static void mid_close_stream(struct mid_player* p)
 	p->stream = 0;
 }
 
-void mid_score_close(HANDLE h)
+void mid_score_close(DJ_HANDLE h)
 {
 	unsigned int err;
 	struct mid_player* p = NULL;
@@ -913,7 +915,7 @@ void mid_score_close(HANDLE h)
 		DJ_TRACE("mid_score_close(): WaitForSingleObject failed: %lu, %s\n", GetLastError(), DJ_FORMAT_MESSAGE(GetLastError()));
 	}
 
-	if(mid_is_handle_valid(h) == FALSE)
+	if(mid_is_handle_valid(h) == false)
 	{
 		err = ReleaseMutex(players_mutex);
 		if(err == 0)
@@ -1010,7 +1012,7 @@ void mid_score_close(HANDLE h)
 	return;
 }
 
-MMRESULT mid_register_callback(HANDLE h, mid_notify_cb cb)
+DJ_RESULT mid_register_callback(DJ_HANDLE h, mid_notify_cb cb)
 {
 	struct mid_player* p = (struct mid_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
@@ -1034,7 +1036,7 @@ MMRESULT mid_register_callback(HANDLE h, mid_notify_cb cb)
 	return MMSYSERR_NOERROR;
 }
 
-MMRESULT mid_play(HANDLE h)
+DJ_RESULT mid_play(DJ_HANDLE h)
 {
 	struct mid_player* p = (struct mid_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
@@ -1139,7 +1141,7 @@ error:
 	return MMSYSERR_NOERROR;
 }
 
-MMRESULT mid_stop(HANDLE h)
+DJ_RESULT mid_stop(DJ_HANDLE h)
 {
 	struct mid_player* p = (struct mid_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
@@ -1209,7 +1211,7 @@ MMRESULT mid_stop(HANDLE h)
 	return MMSYSERR_NOERROR;
 }
 
-MMRESULT mid_pause(HANDLE h)
+DJ_RESULT mid_pause(DJ_HANDLE h)
 {
 	struct mid_player* p = (struct mid_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
@@ -1250,7 +1252,7 @@ MMRESULT mid_pause(HANDLE h)
 	return MMSYSERR_NOERROR;
 }
 
-MMRESULT mid_resume(HANDLE h)
+DJ_RESULT mid_resume(DJ_HANDLE h)
 {
 	struct mid_player* p = (struct mid_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
@@ -1291,7 +1293,7 @@ MMRESULT mid_resume(HANDLE h)
 	return MMSYSERR_NOERROR;
 }
 
-MMRESULT mid_set_volume_left(HANDLE h, unsigned int level)
+DJ_RESULT mid_set_volume_left(DJ_HANDLE h, unsigned int level)
 {
 	unsigned int old = 0, vol = 0;
 	struct mid_player* p = (struct mid_player*)h;
@@ -1330,7 +1332,7 @@ MMRESULT mid_set_volume_left(HANDLE h, unsigned int level)
 	return err;
 }
 
-MMRESULT mid_set_volume_right(HANDLE h, unsigned int level)
+DJ_RESULT mid_set_volume_right(DJ_HANDLE h, unsigned int level)
 {
 	unsigned int old = 0, vol = 0;
 	struct mid_player* p = (struct mid_player*)h;
@@ -1369,7 +1371,7 @@ MMRESULT mid_set_volume_right(HANDLE h, unsigned int level)
 	return err;
 }
 
-MMRESULT mid_set_volume(HANDLE h, unsigned int level)
+DJ_RESULT mid_set_volume(DJ_HANDLE h, unsigned int level)
 {
 	unsigned int err = MMSYSERR_NOERROR;
 
@@ -1380,7 +1382,7 @@ MMRESULT mid_set_volume(HANDLE h, unsigned int level)
 	return err;
 }
 
-MMRESULT mid_get_volume_left(HANDLE h, unsigned int* level)
+DJ_RESULT mid_get_volume_left(DJ_HANDLE h, unsigned int* level)
 {
 	struct mid_player* p = (struct mid_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
@@ -1417,7 +1419,7 @@ MMRESULT mid_get_volume_left(HANDLE h, unsigned int* level)
 	return err;
 }
 
-MMRESULT mid_get_volume_right(HANDLE h, unsigned int* level)
+DJ_RESULT mid_get_volume_right(DJ_HANDLE h, unsigned int* level)
 {
 	struct mid_player* p = (struct mid_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
@@ -1454,12 +1456,12 @@ MMRESULT mid_get_volume_right(HANDLE h, unsigned int* level)
 	return err;
 }
 
-MMRESULT mid_get_volume(HANDLE h, unsigned int* level)
+DJ_RESULT mid_get_volume(DJ_HANDLE h, unsigned int* level)
 {
 	return mid_get_volume_left(h, level);
 }
 
-MMRESULT mid_set_looping(HANDLE h, BOOL looping)
+DJ_RESULT mid_set_looping(DJ_HANDLE h, boolean looping)
 {
 	struct mid_player* p = (struct mid_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
@@ -1483,11 +1485,11 @@ MMRESULT mid_set_looping(HANDLE h, BOOL looping)
 	return MMSYSERR_NOERROR;
 }
 
-BOOL mid_get_looping(HANDLE h)
+boolean mid_is_looping(DJ_HANDLE h)
 {
 	struct mid_player* p = (struct mid_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
-	BOOL looping;
+	boolean looping;
 
 	err = mid_lock_score(h);
 	if(err != MMSYSERR_NOERROR)
@@ -1508,15 +1510,15 @@ BOOL mid_get_looping(HANDLE h)
 	return looping;
 }
 
-BOOL mid_is_playing(HANDLE h)
+boolean mid_is_playing(DJ_HANDLE h)
 {
 	struct mid_player* p = (struct mid_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
-	BOOL ret = FALSE;
+	boolean ret = false;
 
 	err = mid_lock_score(h);
 	if(err != MMSYSERR_NOERROR)
-		return FALSE;
+		return false;
 
 	ret = (p->state == STATE_PLAYING);
 
@@ -1525,15 +1527,15 @@ BOOL mid_is_playing(HANDLE h)
 	return ret;
 }
 
-BOOL mid_is_paused(HANDLE h)
+boolean mid_is_paused(DJ_HANDLE h)
 {
 	struct mid_player* p = (struct mid_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
-	BOOL ret = FALSE;
+	boolean ret = false;
 
 	err = mid_lock_score(h);
 	if(err != MMSYSERR_NOERROR)
-		return FALSE;
+		return false;
 
 	ret = (p->state == STATE_PAUSED);
 
@@ -1542,15 +1544,15 @@ BOOL mid_is_paused(HANDLE h)
 	return ret;
 }
 
-BOOL mid_is_stopped(HANDLE h)
+boolean mid_is_stopped(DJ_HANDLE h)
 {
 	struct mid_player* p = (struct mid_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
-	BOOL ret = FALSE;
+	boolean ret = false;
 
 	err = mid_lock_score(h);
 	if(err != MMSYSERR_NOERROR)
-		return FALSE;
+		return false;
 
 	ret = (p->state == STATE_STOPPED);
 
@@ -1559,7 +1561,7 @@ BOOL mid_is_stopped(HANDLE h)
 	return ret;
 }
 
-static MMRESULT mid_lock_score(HANDLE h)
+static DJ_RESULT mid_lock_score(DJ_HANDLE h)
 {
 	struct mid_player* p = (struct mid_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
@@ -1571,7 +1573,7 @@ static MMRESULT mid_lock_score(HANDLE h)
 		return MMSYSERR_ERROR;
 	}
 
-	if(mid_is_handle_valid(h) == FALSE)
+	if(mid_is_handle_valid(h) == false)
 	{
 		err = ReleaseMutex(players_mutex);
 		if(err == 0)
@@ -1611,7 +1613,7 @@ static MMRESULT mid_lock_score(HANDLE h)
 	return MMSYSERR_NOERROR;
 }
 
-static MMRESULT mid_unlock_score(HANDLE h)
+static DJ_RESULT mid_unlock_score(DJ_HANDLE h)
 {
 	struct mid_player* p = (struct mid_player*)h;
 	unsigned int err = MMSYSERR_NOERROR;
@@ -1623,7 +1625,7 @@ static MMRESULT mid_unlock_score(HANDLE h)
 		return MMSYSERR_ERROR;
 	}
 
-	if(mid_is_handle_valid(h) == FALSE)
+	if(mid_is_handle_valid(h) == false)
 	{
 		err = ReleaseMutex(players_mutex);
 		if(err == 0)
@@ -1740,7 +1742,7 @@ static unsigned int mid_get_streambuf(struct mid_score* s, unsigned int* out, un
 
 	*outlen = 0;
 
-	while(TRUE)
+	while(true)
 	{
 		unsigned int time = UINT_MAX;
 		unsigned int idx = -1;
@@ -1947,7 +1949,7 @@ int main(int argc, char* argv[])
 	unsigned long n, i;
 	unsigned int err;
 
-	HANDLE score;
+	DJ_HANDLE score;
 
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stdin, NULL, _IONBF, 0);

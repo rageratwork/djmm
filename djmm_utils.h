@@ -43,9 +43,6 @@ unsigned long swap_bytes_long(unsigned long in);
 unsigned long read_var_long(unsigned char* buf, unsigned int* inc);
 void write_var_long(unsigned int t, unsigned char** buf, unsigned int* len);
 
-unsigned char* load_file(const unsigned char* filename, unsigned int* len);
-unsigned int save_file(const unsigned char* filename, unsigned char* buf, unsigned int len);
-
 //#define STATE_ERROR		0
 //#define STATE_STARTING	1
 //#define STATE_PLAYING	2
